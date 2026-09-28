@@ -32,4 +32,24 @@ class VoiceCommandParserTest {
             (command as VoiceCommand.AgentTask).text,
         )
     }
+
+    @Test
+    fun removesWakeWordFromAgentTask() {
+        assertEquals(
+            VoiceCommand.AgentTask("відкрий календар"),
+            VoiceCommandParser.parse("Джарвіс, відкрий календар"),
+        )
+    }
+
+    @Test
+    fun recognizesLocalMediaAndVolumeCommands() {
+        assertEquals(
+            VoiceCommand.Media(MediaAction.NEXT),
+            VoiceCommandParser.parse("Джарвіс, наступний трек"),
+        )
+        assertEquals(
+            VoiceCommand.Volume(VolumeAction.UP),
+            VoiceCommandParser.parse("зроби голосніше"),
+        )
+    }
 }

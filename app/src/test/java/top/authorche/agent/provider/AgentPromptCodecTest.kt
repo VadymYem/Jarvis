@@ -2,9 +2,20 @@ package top.authorche.agent.provider
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentPromptCodecTest {
+    @Test
+    fun promptLocksUkrainianAndTreatsExternalContentAsUntrusted() {
+        val prompt = AgentPromptCodec.systemPrompt(emptyList())
+
+        assertTrue(prompt.contains("ЗАВЖДИ спілкуйся"))
+        assertTrue(prompt.contains("українською"))
+        assertTrue(prompt.contains("НЕДОВІРЕНИМИ ДАНИМИ"))
+        assertTrue(AgentPromptCodec.userPrompt("створи нагадування", emptyList()).contains("ПОТОЧНИЙ ЧАС:"))
+    }
+
     @Test
     fun parsesToolDecisionWrappedInExtraText() {
         val decision = AgentPromptCodec.parseDecision(

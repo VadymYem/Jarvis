@@ -46,6 +46,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -75,6 +76,7 @@ import top.authorche.agent.agent.PendingConfirmation
 import top.authorche.agent.connectors.ConnectorRegistry
 import top.authorche.agent.connectors.ConnectorState
 import top.authorche.agent.connectors.ConnectorStatus
+import top.authorche.agent.notifications.NotificationBridge
 import top.authorche.agent.shizuku.ShizukuBridge
 import top.authorche.agent.shizuku.ShizukuState
 import top.authorche.agent.termux.TermuxBridge
@@ -83,6 +85,7 @@ import top.authorche.agent.provider.ProviderKind
 import top.authorche.agent.voice.VoiceRecognitionController
 import top.authorche.agent.voice.VoiceRecognitionState
 import top.authorche.agent.voice.VoiceProfile
+import top.authorche.agent.voice.VoiceLanguage
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
@@ -149,10 +152,12 @@ private fun AuthorAgentScreen(
     val context = LocalContext.current
     var emailConnector by remember(context) { mutableStateOf(ConnectorRegistry.email(context)) }
     var termuxConnector by remember(context) { mutableStateOf(ConnectorRegistry.termux(context)) }
+    var notificationsReady by remember { mutableStateOf(NotificationBridge.isConnected()) }
 
     val voiceController = remember(context, viewModel) {
         VoiceRecognitionController(
             context = context,
+            profileProvider = viewModel::loadVoiceProfile,
             onState = { voiceRecognition = it },
             onResult = { recognized ->
                 task = recognized
@@ -203,6 +208,7 @@ private fun AuthorAgentScreen(
             ShizukuBridge.refresh()
             emailConnector = ConnectorRegistry.email(context)
             termuxConnector = ConnectorRegistry.termux(context)
+            notificationsReady = NotificationBridge.isConnected()
             delay(1_000)
         }
     }
@@ -239,6 +245,7 @@ private fun AuthorAgentScreen(
                     shizukuState = shizukuState,
                     emailConnector = emailConnector,
                     termuxConnector = termuxConnector,
+                    notificationsReady = notificationsReady,
                     onAccessibility = openAccessibility,
                     onShizuku = ShizukuBridge::requestPermission,
                     onTermux = {
@@ -252,6 +259,9 @@ private fun AuthorAgentScreen(
                                 ),
                             )
                         }
+                    },
+                    onNotifications = {
+                        context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                     },
                 )
             }
@@ -346,7 +356,21 @@ private fun AuthorAgentScreen(
             onReferenceAudio = { voiceReferencePicker.launch(arrayOf("audio/*")) },
             onFinderTrack = { finderTrackPicker.launch(arrayOf("audio/mpeg", "audio/*")) },
             onSpeakResponses = viewModel::setSpeakResponses,
+            onInputLanguage = viewModel::setInputLanguage,
+            onOutputLanguage = viewModel::setOutputLanguage,
+            onPreferOffline = viewModel::setPreferOfflineRecognition,
+            onSpeechRate = viewModel::setSpeechRate,
+            onSpeechPitch = viewModel::setSpeechPitch,
             onPreview = viewModel::previewVoice,
+            onTtsSettings = {
+                val settingsIntent = Intent("com.android.settings.TTS_SETTINGS")
+                runCatching { context.startActivity(settingsIntent) }
+                    .onFailure {
+                        context.startActivity(
+                            Intent(android.speech.tts.TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA),
+                        )
+                    }
+            },
         )
     }
 }
@@ -472,9 +496,11 @@ private fun CapabilityCard(
     shizukuState: ShizukuState,
     emailConnector: ConnectorStatus,
     termuxConnector: ConnectorStatus,
+    notificationsReady: Boolean,
     onAccessibility: () -> Unit,
     onShizuku: () -> Unit,
     onTermux: () -> Unit,
+    onNotifications: () -> Unit,
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -521,6 +547,18 @@ private fun CapabilityCard(
                     ConnectorState.UNAVAILABLE -> "Встановити"
                 },
                 onAction = onTermux,
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+            CapabilityRow(
+                title = "Сповіщення й повідомлення",
+                ready = notificationsReady,
+                detail = if (notificationsReady) {
+                    "Читання, резюме та швидкі відповіді готові"
+                } else {
+                    "Потрібен окремий системний доступ до сповіщень"
+                },
+                action = if (notificationsReady) null else "Увімкнути",
+                onAction = onNotifications,
             )
         }
     }
@@ -784,9 +822,20 @@ private fun VoiceSettingsDialog(
     onReferenceAudio: () -> Unit,
     onFinderTrack: () -> Unit,
     onSpeakResponses: (Boolean) -> Unit,
+    onInputLanguage: (VoiceLanguage) -> Unit,
+    onOutputLanguage: (VoiceLanguage) -> Unit,
+    onPreferOffline: (Boolean) -> Unit,
+    onSpeechRate: (Float) -> Unit,
+    onSpeechPitch: (Float) -> Unit,
     onPreview: () -> Unit,
+    onTtsSettings: () -> Unit,
 ) {
     var speakResponses by remember { mutableStateOf(initial.speakResponses) }
+    var inputLanguage by remember { mutableStateOf(VoiceLanguage.fromTag(initial.inputLanguageTag)) }
+    var outputLanguage by remember { mutableStateOf(VoiceLanguage.fromTag(initial.outputLanguageTag)) }
+    var preferOffline by remember { mutableStateOf(initial.preferOfflineRecognition) }
+    var speechRate by remember { mutableStateOf(initial.speechRate) }
+    var speechPitch by remember { mutableStateOf(initial.speechPitch) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -797,10 +846,58 @@ private fun VoiceSettingsDialog(
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Text(
-                    "Голосові команди розпізнаються локально, якщо пристрій має on-device speech service. " +
-                        "Відповіді зараз озвучує системний TTS Android.",
+                    "Українська мова встановлена за замовчуванням незалежно від мови телефона. " +
+                        "Розпізнавання працює локально, якщо встановлено український on-device пакет.",
                     style = MaterialTheme.typography.bodySmall,
                 )
+                Text("Мова розпізнавання", fontWeight = FontWeight.SemiBold)
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    VoiceLanguage.entries.forEach { language ->
+                        FilterChip(
+                            selected = language == inputLanguage,
+                            onClick = {
+                                inputLanguage = language
+                                onInputLanguage(language)
+                            },
+                            label = { Text(language.title) },
+                        )
+                    }
+                }
+                Text("Мова голосу", fontWeight = FontWeight.SemiBold)
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    VoiceLanguage.entries.forEach { language ->
+                        FilterChip(
+                            selected = language == outputLanguage,
+                            onClick = {
+                                outputLanguage = language
+                                onOutputLanguage(language)
+                            },
+                            label = { Text(language.title) },
+                        )
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Надавати перевагу офлайн", fontWeight = FontWeight.Medium)
+                        Text(
+                            "Якщо мовного пакета немає, Android може використати мережеву службу",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Switch(
+                        checked = preferOffline,
+                        onCheckedChange = {
+                            preferOffline = it
+                            onPreferOffline(it)
+                        },
+                    )
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("Озвучувати відповіді", fontWeight = FontWeight.Medium)
@@ -813,6 +910,23 @@ private fun VoiceSettingsDialog(
                             onSpeakResponses(it)
                         },
                     )
+                }
+                Text("Швидкість голосу · ${"%.2f".format(speechRate)}×", fontWeight = FontWeight.Medium)
+                Slider(
+                    value = speechRate,
+                    onValueChange = { speechRate = it },
+                    onValueChangeFinished = { onSpeechRate(speechRate) },
+                    valueRange = 0.7f..1.3f,
+                )
+                Text("Висота голосу · ${"%.2f".format(speechPitch)}×", fontWeight = FontWeight.Medium)
+                Slider(
+                    value = speechPitch,
+                    onValueChange = { speechPitch = it },
+                    onValueChangeFinished = { onSpeechPitch(speechPitch) },
+                    valueRange = 0.7f..1.3f,
+                )
+                OutlinedButton(onClick = onTtsSettings, modifier = Modifier.fillMaxWidth()) {
+                    Text("Українські голоси Android")
                 }
                 HorizontalDivider()
                 Text("Голосовий зліпок", fontWeight = FontWeight.SemiBold)

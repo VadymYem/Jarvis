@@ -3,6 +3,8 @@ package top.authorche.agent
 import android.app.Application
 import android.content.Intent
 import android.net.Uri
+import android.media.AudioManager
+import android.view.KeyEvent
 import android.os.BatteryManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -19,6 +21,9 @@ import top.authorche.agent.provider.ProviderKind
 import top.authorche.agent.voice.VoiceCommand
 import top.authorche.agent.voice.VoiceCommandParser
 import top.authorche.agent.voice.VoiceProfile
+import top.authorche.agent.voice.VoiceLanguage
+import top.authorche.agent.voice.MediaAction
+import top.authorche.agent.voice.VolumeAction
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val graph = (application as AuthorAgentApplication).graph
@@ -63,6 +68,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     .getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
                 respondLocally(if (battery in 0..100) "Заряд батареї $battery відсотків" else "Не вдалося прочитати заряд батареї")
             }
+            VoiceCommand.StopSpeaking -> {
+                graph.voiceOutput.stop()
+                mutableVoiceStatus.value = "Озвучення зупинено"
+            }
+            is VoiceCommand.Media -> controlMedia(command.action)
+            is VoiceCommand.Volume -> controlVolume(command.action)
             is VoiceCommand.AgentTask -> {
                 if (command.text.isBlank()) return
                 mutableVoiceStatus.value = "Виконую: ${command.text}"
@@ -102,6 +113,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!enabled) graph.voiceOutput.stop()
     }
 
+    fun setInputLanguage(language: VoiceLanguage) = graph.voiceProfile.setInputLanguage(language)
+
+    fun setOutputLanguage(language: VoiceLanguage) {
+        graph.voiceProfile.setOutputLanguage(language)
+        previewVoice()
+    }
+
+    fun setPreferOfflineRecognition(enabled: Boolean) =
+        graph.voiceProfile.setPreferOfflineRecognition(enabled)
+
+    fun setSpeechRate(rate: Float) = graph.voiceProfile.setSpeechRate(rate)
+
+    fun setSpeechPitch(pitch: Float) = graph.voiceProfile.setSpeechPitch(pitch)
+
     fun previewVoice() = respondLocally("Jarvis | AuthorAi на зв'язку")
 
     fun confirm(approved: Boolean) = graph.orchestrator.respondToConfirmation(approved)
@@ -136,6 +161,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun respondLocally(message: String) {
         mutableVoiceStatus.value = message
         speakIfEnabled(message)
+    }
+
+    private fun controlMedia(action: MediaAction) {
+        val audio = getApplication<Application>().getSystemService(AudioManager::class.java)
+        val code = when (action) {
+            MediaAction.PLAY -> KeyEvent.KEYCODE_MEDIA_PLAY
+            MediaAction.PAUSE -> KeyEvent.KEYCODE_MEDIA_PAUSE
+            MediaAction.NEXT -> KeyEvent.KEYCODE_MEDIA_NEXT
+            MediaAction.PREVIOUS -> KeyEvent.KEYCODE_MEDIA_PREVIOUS
+        }
+        audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
+        audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
+        respondLocally(
+            when (action) {
+                MediaAction.PLAY -> "Відтворення продовжено"
+                MediaAction.PAUSE -> "Відтворення призупинено"
+                MediaAction.NEXT -> "Перемикаю на наступний трек"
+                MediaAction.PREVIOUS -> "Повертаю попередній трек"
+            },
+        )
+    }
+
+    private fun controlVolume(action: VolumeAction) {
+        val audio = getApplication<Application>().getSystemService(AudioManager::class.java)
+        audio.adjustStreamVolume(
+            AudioManager.STREAM_MUSIC,
+            when (action) {
+                VolumeAction.UP -> AudioManager.ADJUST_RAISE
+                VolumeAction.DOWN -> AudioManager.ADJUST_LOWER
+                VolumeAction.MUTE -> AudioManager.ADJUST_MUTE
+            },
+            AudioManager.FLAG_SHOW_UI,
+        )
+        respondLocally(
+            when (action) {
+                VolumeAction.UP -> "Збільшую гучність"
+                VolumeAction.DOWN -> "Зменшую гучність"
+                VolumeAction.MUTE -> "Звук вимкнено"
+            },
+        )
     }
 
     private fun speakIfEnabled(message: String) {

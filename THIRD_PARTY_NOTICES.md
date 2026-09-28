@@ -24,6 +24,24 @@
 - License: MIT
 - Use: research reference for the mobile GUI-agent observe/act/reflect workflow. Its Python ADB implementation is not embedded.
 
+## MobileRun
+
+- Repository: https://github.com/mobilerun-ai/mobilerun
+- License: MIT
+- Use: research reference for combining accessibility trees, gestures and screenshot-aware mobile task execution. No MobileRun source is embedded.
+
+## PokeClaw
+
+- Repository: https://github.com/shubham0204/PokeClaw
+- License: Apache-2.0
+- Use: research reference for on-device Android agents, notification access and explicit background execution. No PokeClaw source or model is embedded.
+
+## sherpa-onnx
+
+- Repository: https://github.com/k2-fsa/sherpa-onnx
+- License: Apache-2.0
+- Use: evaluated as the future local Ukrainian STT/TTS, VAD and wake-word runtime. It is not bundled in version 0.4.0.
+
 ## llama.cpp
 
 - Repository: https://github.com/ggml-org/llama.cpp

@@ -5,7 +5,10 @@ import android.speech.tts.TextToSpeech
 import java.util.Locale
 import java.util.UUID
 
-class VoiceOutput(context: Context) : TextToSpeech.OnInitListener {
+class VoiceOutput(
+    context: Context,
+    private val profileProvider: () -> VoiceProfile,
+) : TextToSpeech.OnInitListener {
     private val textToSpeech = TextToSpeech(context.applicationContext, this)
     @Volatile private var ready = false
     @Volatile private var pendingText: String? = null
@@ -14,12 +17,7 @@ class VoiceOutput(context: Context) : TextToSpeech.OnInitListener {
         ready = status == TextToSpeech.SUCCESS
         if (!ready) return
 
-        val preferred = Locale.getDefault()
-        val result = textToSpeech.setLanguage(preferred)
-        if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-            textToSpeech.language = Locale("uk", "UA")
-        }
-        textToSpeech.setSpeechRate(1.02f)
+        applyProfile(profileProvider())
         pendingText?.let {
             pendingText = null
             speak(it)
@@ -33,6 +31,7 @@ class VoiceOutput(context: Context) : TextToSpeech.OnInitListener {
             pendingText = safeText
             return
         }
+        applyProfile(profileProvider())
         textToSpeech.speak(
             safeText,
             TextToSpeech.QUEUE_FLUSH,
@@ -47,6 +46,28 @@ class VoiceOutput(context: Context) : TextToSpeech.OnInitListener {
     }
 
     fun shutdown() = textToSpeech.shutdown()
+
+    private fun applyProfile(profile: VoiceProfile) {
+        if (!ready) return
+        val locale = Locale.forLanguageTag(profile.outputLanguageTag)
+        val result = textToSpeech.setLanguage(locale)
+        if (result != TextToSpeech.LANG_MISSING_DATA && result != TextToSpeech.LANG_NOT_SUPPORTED) {
+            textToSpeech.voices
+                ?.asSequence()
+                ?.filter { it.locale.language.equals(locale.language, ignoreCase = true) }
+                ?.sortedWith(
+                    compareByDescending<android.speech.tts.Voice> {
+                        it.locale.toLanguageTag().equals(profile.outputLanguageTag, ignoreCase = true)
+                    }
+                        .thenBy { it.isNetworkConnectionRequired }
+                        .thenByDescending { it.quality },
+                )
+                ?.firstOrNull()
+                ?.let { textToSpeech.voice = it }
+        }
+        textToSpeech.setSpeechRate(profile.speechRate)
+        textToSpeech.setPitch(profile.speechPitch)
+    }
 
     companion object {
         private const val MAX_SPEECH_LENGTH = 3_500

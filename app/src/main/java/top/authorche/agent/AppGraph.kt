@@ -19,7 +19,7 @@ class AppGraph(context: Context) {
     val settings = AgentSettingsStore(appContext, secrets)
     val localModels = LocalModelStore(appContext, settings)
     val voiceProfile = VoiceProfileStore(appContext)
-    val voiceOutput = VoiceOutput(appContext)
+    val voiceOutput = VoiceOutput(appContext, voiceProfile::load)
     val phoneFinder = PhoneFinderController(appContext)
     private val tools = ToolRegistry(AndroidTools.create(appContext, phoneFinder))
     private val provider = AgentProviderRouter(appContext, settings)

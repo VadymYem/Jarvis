@@ -10,7 +10,6 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import androidx.core.content.ContextCompat
-import java.util.Locale
 
 data class VoiceRecognitionState(
     val listening: Boolean = false,
@@ -20,6 +19,7 @@ data class VoiceRecognitionState(
 
 class VoiceRecognitionController(
     context: Context,
+    private val profileProvider: () -> VoiceProfile,
     private val onState: (VoiceRecognitionState) -> Unit,
     private val onResult: (String) -> Unit,
 ) : RecognitionListener, AutoCloseable {
@@ -39,7 +39,9 @@ class VoiceRecognitionController(
         }
 
         closeRecognizer()
+        val profile = profileProvider()
         recognizer = if (
+            profile.preferOfflineRecognition &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             SpeechRecognizer.isOnDeviceRecognitionAvailable(appContext)
         ) {
@@ -50,10 +52,15 @@ class VoiceRecognitionController(
 
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, profile.inputLanguageTag)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, profile.inputLanguageTag)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, profile.preferOfflineRecognition)
+            putExtra(
+                RecognizerIntent.EXTRA_PROMPT,
+                "Говоріть: ${VoiceLanguage.fromTag(profile.inputLanguageTag).title}",
+            )
         }
         onState(VoiceRecognitionState(listening = true))
         recognizer?.startListening(intent)
@@ -96,6 +103,8 @@ class VoiceRecognitionController(
             SpeechRecognizer.ERROR_NO_MATCH -> "Не вдалося розпізнати команду"
             SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Розпізнавач уже зайнятий"
             SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Не почув команди"
+            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "Обрана мова не підтримується мовною службою"
+            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "Мовний пакет тимчасово недоступний"
             else -> "Помилка розпізнавання ($error)"
         }
         onState(VoiceRecognitionState(error = message))
