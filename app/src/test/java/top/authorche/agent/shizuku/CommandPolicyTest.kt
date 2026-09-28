@@ -2,7 +2,6 @@ package top.authorche.agent.shizuku
 
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFailsWith
 import org.junit.Test
 import top.authorche.agent.agent.RiskLevel
 
@@ -21,7 +20,7 @@ class CommandPolicyTest {
 
     @Test
     fun rejectsInjectedPackageName() {
-        assertFailsWith<IllegalArgumentException> {
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
             CommandPolicy.prepare(
                 JSONObject()
                     .put("operation", "force_stop")
@@ -32,7 +31,7 @@ class CommandPolicyTest {
 
     @Test
     fun rejectsUnknownOperation() {
-        assertFailsWith<IllegalStateException> {
+        org.junit.Assert.assertThrows(IllegalStateException::class.java) {
             CommandPolicy.prepare(JSONObject().put("operation", "raw_shell"))
         }
     }
