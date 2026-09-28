@@ -1,28 +1,42 @@
-# Security policy
+# Security notes
+
+This repository is a portfolio engineering snapshot. It is not a production service or a supported binary distribution.
 
 ## Threat model
 
-AuthorAI Agent поєднує модель, Accessibility і ADB-рівень. Головні ризики: prompt injection з тексту на екрані, надмірні дозволи, помилкова інтерпретація UI, витік API-ключа та виконання небезпечної shell-команди.
+Jarvis | AuthorAI combines model inference, Android Accessibility, and optional privileged Android operations. The design focuses on reducing risks from UI prompt injection, excessive privileges, credential exposure, unsafe privileged actions, and incorrect model decisions.
 
-## Захисні межі
+## Security boundaries
 
-- Модель не отримує Binder, `Context`, shell або Shizuku напряму.
-- Усі дії мають типізований контракт і проходять `PolicyEngine`.
-- `CommandPolicy` будує аргументи процесу як масив, а не shell-рядок; командна ін'єкція через `;`, `$()` або перенаправлення не працює.
-- Невідома Shizuku-операція отримує рівень `CRITICAL` і блокується.
-- Парольні Accessibility-вузли маскуються.
-- API-ключ шифрується AES-GCM ключем з Android Keystore та виключений із backup.
-- Довжина відповіді системної команди та час виконання обмежені.
-- Операції зміни дозволів і системних settings завжди вимагають підтвердження.
+- The model does not receive Binder, Android Context, Shizuku, or a raw shell primitive directly.
+- Executable actions are exposed through typed application tools.
+- Tool execution passes through `PolicyEngine`.
+- Privileged operations pass through `CommandPolicy`.
+- Unknown privileged operations are classified as `CRITICAL` and denied.
+- Password Accessibility nodes are masked before model use.
+- API credentials are encrypted with AES-256-GCM using key material stored in Android Keystore.
+- Secret-bearing preferences and local models are excluded from Android backup/device transfer.
+- Cloud provider endpoints must use HTTPS.
+- Medium- and high-risk operations require explicit user confirmation.
+- Command runtime and returned output size are bounded.
 
-## Відомі межі версії 0.1
+## Portfolio scope
 
-- Історія кроків поки живе в пам'яті процесу.
-- Провайдер отримує текст Accessibility snapshot, необхідний для поточної задачі.
-- Застосунок не має керівного з'єднання з окремим сервером.
-- Локальна GGUF-модель працює без мережі; хмарний запит виконується лише при вибраному API-провайдері.
-- Немає MediaProjection, запису аудіо або прихованого фонового спостереження.
+The snapshot intentionally keeps several areas small and auditable:
 
-## Повідомлення про вразливість
+- Agent history is process-local rather than a durable task database.
+- Local GGUF inference can run without a network request.
+- There is no AuthorAI account backend, OAuth session, JWT layer, or remote control service.
+- The policy engine is deterministic and intentionally easy to review.
 
-Не публікуйте активний exploit або приватні дані у відкритому issue. Надішліть опис на `dev@authorche.top`, додавши версію Android, модель пристрою, commit SHA, кроки відтворення та очікувану/фактичну поведінку.
+## Security review focus
+
+Key files for review:
+
+- `app/src/main/java/top/authorche/agent/security/SecretStore.kt`
+- `app/src/main/java/top/authorche/agent/agent/PolicyEngine.kt`
+- `app/src/main/java/top/authorche/agent/shizuku/CommandPolicy.kt`
+- `app/src/main/java/top/authorche/agent/shizuku/ShizukuBridge.kt`
+- `app/src/main/java/top/authorche/agent/provider/AgentSettingsStore.kt`
+
+See [docs/CASE_STUDY.md](docs/CASE_STUDY.md) for the architecture and trade-offs.
