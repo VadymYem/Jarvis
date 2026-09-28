@@ -1,103 +1,76 @@
-# Функції AuthorAI Agent
+# Implemented capabilities
 
-## Реалізовано у версії 0.2
+This document describes only functionality implemented in the portfolio snapshot. It intentionally does not act as a product roadmap.
 
-### Агентне ядро
+## Agent core
 
-1. Приймає завдання природною мовою українською або іншою мовою моделі.
-2. Розкладає завдання на послідовність коротких дій.
-3. Виконує одну дію за крок і перевіряє її результат.
-4. Зберігає видимий журнал планів, дій, успіхів і помилок.
-5. Зупиняє нескінченні цикли після 16 кроків.
-6. Просить підтвердження для дій середнього й високого ризику.
-7. Блокує критичні та невідомі системні операції.
+- Accepts a natural-language task.
+- Runs a bounded agent loop of up to 16 steps.
+- Requests one tool action or final answer per step.
+- Records visible plan/action/result trace entries.
+- Applies a risk policy before every tool execution.
+- Requires user confirmation for medium- and high-risk operations.
+- Rejects critical operations.
 
-### Локальні та хмарні моделі
+## Model layer
 
-8. Імпортує локальну модель у форматі `.gguf` через системний вибір файлу.
-9. Перевіряє сигнатуру GGUF до запуску моделі.
-10. Запускає локальну модель на пристрої через `llama.cpp`.
-11. Працює локально без API-ключа та без надсилання промптів у хмару.
-12. Підтримує Gemini API.
-13. Підтримує OpenAI API та GPT-моделі.
-14. Підтримує Groq API.
-15. Підтримує довільні OpenAI-сумісні HTTPS API.
-16. Зберігає окремі endpoint, модель і ключ для кожного провайдера.
-17. Дозволяє перемикати рушій без перекомпіляції застосунку.
-18. Не містить спільного або вбудованого API-ключа.
-19. Шифрує особисті ключі через AES-GCM та Android Keystore.
-20. Не включає ключі або локальні моделі в Android backup.
+- Local GGUF inference through llama.cpp/JNI.
+- Gemini REST provider.
+- OpenAI-compatible REST provider.
+- Presets for OpenAI and Groq.
+- Runtime provider switching.
+- Per-provider endpoint, model, and credential configuration.
+- HTTPS requirement for cloud endpoints.
+- Local GGUF operation without an API key.
 
-### Взаємодія з Android
+## Credential handling
 
-21. Відкриває встановлений застосунок за назвою або package name.
-22. Читає семантичне Accessibility-дерево поточного екрана.
-23. Маскує парольні поля до передавання хмарній моделі.
-24. Шукає й натискає елемент за видимим текстом.
-25. Вводить текст у вибране або активне поле.
-26. Прокручує доступну область вперед.
-27. Виконує системні дії «Назад» і «Додому».
+- Per-provider API credentials.
+- AES-GCM encryption before storage.
+- Android Keystore-backed secret key material.
+- Encrypted values stored in private SharedPreferences.
+- Secrets excluded from Android backup/device transfer.
+- Password-style masking in the settings UI.
 
-### Shizuku / ADB
+## Android interaction
 
-28. Визначає наявність і стан Shizuku.
-29. Запитує дозвіл Shizuku штатним системним діалогом.
-30. Запускає власний UserService з UID `shell` або `root`.
-31. Примусово зупиняє пакет після підтвердження.
-32. Відкриває дозволені сторінки Android Settings.
-33. Надсилає дозволені key events: Back, Home, Enter, Tab, media та volume.
-34. Надає або відкликає runtime permission після підтвердження.
-35. Змінює дозволений `system`, `secure` або `global` setting після підтвердження.
-36. Читає стан активного Activity через `dumpsys`.
-37. Не виконує довільний shell-текст від моделі.
-38. Передає команду як масив аргументів, що блокує shell injection.
-39. Обмежує виконання системної команди 15 секундами.
-40. Обмежує розмір поверненого системного виводу.
+- Launch an installed application by name/package.
+- Read the current Accessibility semantic tree.
+- Mask password fields.
+- Find and click visible elements.
+- Enter text through Accessibility.
+- Scroll supported nodes.
+- Trigger Back and Home system actions.
 
-### Автоматизації
+## Shizuku / privileged operations
 
-41. Створює локальне нагадування із заголовком і текстом.
-42. Працює з нагадуваннями у фоні через WorkManager.
-43. Показує нагадування у власному Android notification channel.
+- Detect Shizuku availability and authorization state.
+- Request Shizuku permission.
+- Bind a private UserService.
+- Execute only application-defined privileged operations.
+- Force-stop an application after confirmation.
+- Open selected Android Settings pages.
+- Send selected key events.
+- Grant/revoke runtime permissions after confirmation.
+- Modify selected Android settings after confirmation.
+- Read active-activity state through dumpsys.
+- Reject unknown privileged operations.
+- Limit command execution time and returned output.
 
-### Інтерфейс і приватність
+## Automation
 
-44. Нативний Material 3 UI на Jetpack Compose.
-45. Фірмова тепла палітра AuthorChe замість стандартної теми.
-46. Автоматична світла й темна тема.
-47. Edge-to-edge компонування для сучасних Android.
-48. Український інтерфейс за замовчуванням.
-49. Відображення стану Accessibility та Shizuku.
-50. Окремий діалог підтвердження з рівнем ризику.
-51. Захищене маскування API-ключа у формі.
-52. Дані Accessibility не записуються на диск за замовчуванням.
+- Create local reminders.
+- Schedule background reminder work with WorkManager.
+- Deliver reminders through an Android notification channel.
 
-## Заплановано
+## UI and engineering
 
-### Надійність і моделі
+- Native Jetpack Compose UI.
+- Material 3 components.
+- Light/dark theme.
+- Runtime capability status for Accessibility and Shizuku.
+- Confirmation dialog with visible risk level.
+- Unit tests for policy/command boundaries.
+- CI build and unit-test verification.
 
-53. Постійне Room-сховище задач із відновленням після перезапуску.
-54. Нативний tool calling для Gemini та OpenAI-сумісних провайдерів.
-55. Кілька моделей на провайдера, автоматичний failover і контроль лімітів.
-56. Окремі planner, executor, validator і reflector.
-57. Профілі підтверджень: кожна дія, вся поточна задача, постійне правило.
-58. Керування context window, KV-cache, температурою та кількістю потоків локальної моделі.
-59. Завантаження сумісних GGUF-моделей із перевіркою контрольної суми.
-
-### Повна Android-автоматизація
-
-60. Жести й координатний fallback, коли Accessibility-вузол відсутній.
-61. OCR і vision-аналіз знімка лише на запит.
-62. MediaProjection після системної згоди на кожну сесію.
-63. Точні, повторювані та умовні автоматизації.
-64. Робота з файлами через Storage Access Framework.
-65. Контакти, календар і повідомлення через окремі дозволені tools.
-66. Локальна черга довгих задач і відновлення після перезапуску телефона.
-
-### Голос
-
-67. Видимий запис голосових нотаток, запущений самим користувачем.
-68. Локальна транскрипція та резюме запису.
-69. Політика автоматичного видалення сирого аудіо.
-
-Прихований запис телефонних дзвінків не входить до плану: звичайний Android APK не має привілейованого `CAPTURE_AUDIO_OUTPUT`, а запис без інформованої згоди створює юридичний і приватнісний ризик.
+For architecture and security rationale, see [ARCHITECTURE.md](ARCHITECTURE.md), [CASE_STUDY.md](CASE_STUDY.md), and [../SECURITY.md](../SECURITY.md).
