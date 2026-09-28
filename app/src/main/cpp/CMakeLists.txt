@@ -24,6 +24,27 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(llama_cpp)
 
+# llama.android currently calls __android_log_is_loggable(), which is only
+# available from API 30. Jarvis supports API 26+, so keep the same severity
+# filtering without linking an unavailable platform symbol on Android 8/9/10.
+set(LLAMA_ANDROID_LOGGING_HEADER
+    "${llama_cpp_SOURCE_DIR}/examples/llama.android/lib/src/main/cpp/logging.h")
+file(READ "${LLAMA_ANDROID_LOGGING_HEADER}" LLAMA_ANDROID_LOGGING_CONTENT)
+set(LLAMA_ANDROID_LOGGING_OLD
+    "return __android_log_is_loggable(prio, LOG_TAG, LOG_MIN_LEVEL);")
+set(LLAMA_ANDROID_LOGGING_NEW
+    "return prio >= LOG_MIN_LEVEL;")
+string(REPLACE
+    "${LLAMA_ANDROID_LOGGING_OLD}"
+    "${LLAMA_ANDROID_LOGGING_NEW}"
+    LLAMA_ANDROID_LOGGING_PATCHED
+    "${LLAMA_ANDROID_LOGGING_CONTENT}"
+)
+if(LLAMA_ANDROID_LOGGING_PATCHED STREQUAL LLAMA_ANDROID_LOGGING_CONTENT)
+    message(FATAL_ERROR "Pinned llama.cpp logging compatibility patch no longer applies")
+endif()
+file(WRITE "${LLAMA_ANDROID_LOGGING_HEADER}" "${LLAMA_ANDROID_LOGGING_PATCHED}")
+
 add_library(
     ${CMAKE_PROJECT_NAME}
     SHARED
