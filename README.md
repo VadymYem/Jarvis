@@ -61,7 +61,7 @@ gradle --no-daemon :app:assembleDebug test
 - Accessibility-вміст не пишеться на диск за замовчуванням. Поля паролів маскуються до передавання моделі.
 - Довільна shell-команда від моделі ніколи не виконується: параметри перевіряє `CommandPolicy`.
 
-Докладніше: [ARCHITECTURE.md](docs/ARCHITECTURE.md), [ROADMAP.md](docs/ROADMAP.md), [SECURITY.md](SECURITY.md).
+Повний перелік: [FUNCTIONS.md](docs/FUNCTIONS.md). Докладніше про реалізацію: [ARCHITECTURE.md](docs/ARCHITECTURE.md), [ROADMAP.md](docs/ROADMAP.md), [SECURITY.md](SECURITY.md).
 
 ## Ліцензія
 

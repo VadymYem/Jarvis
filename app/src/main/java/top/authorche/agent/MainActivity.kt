@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -25,6 +26,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.weight
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -55,6 +58,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
@@ -70,6 +74,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         setContent {
             AuthorTheme {
                 AuthorAgentScreen(
@@ -404,7 +409,7 @@ private fun ConfirmationDialog(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(confirmation.summary)
                 Text(
-                    "Рівень ризику: ${confirmation.risk.name}",
+                    "Рівень ризику: ${confirmation.risk.ukrainianName()}",
                     color = MaterialTheme.colorScheme.tertiary,
                     style = MaterialTheme.typography.labelMedium,
                 )
@@ -430,7 +435,10 @@ private fun ProviderSettingsDialog(
         onDismissRequest = onDismiss,
         title = { Text("Модель AuthorAI") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 Text(
                     "Підтримується OpenAI-сумісний HTTPS API. Ключ шифрується Android Keystore.",
                     style = MaterialTheme.typography.bodySmall,
@@ -451,6 +459,7 @@ private fun ProviderSettingsDialog(
                     value = key,
                     onValueChange = { key = it },
                     label = { Text("API-ключ") },
+                    visualTransformation = PasswordVisualTransformation(),
                     singleLine = true,
                 )
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
@@ -464,6 +473,13 @@ private fun ProviderSettingsDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Скасувати") } },
     )
+}
+
+private fun top.authorche.agent.agent.RiskLevel.ukrainianName(): String = when (this) {
+    top.authorche.agent.agent.RiskLevel.LOW -> "низький"
+    top.authorche.agent.agent.RiskLevel.MEDIUM -> "середній"
+    top.authorche.agent.agent.RiskLevel.HIGH -> "високий"
+    top.authorche.agent.agent.RiskLevel.CRITICAL -> "критичний"
 }
 
 @Composable

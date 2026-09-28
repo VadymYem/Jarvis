@@ -50,7 +50,8 @@ android {
 }
 
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2026.09.00")
+    // Compose 1.9.x is the newest stable line compatible with AGP 8.13 / SDK 36.
+    val composeBom = platform("androidx.compose:compose-bom:2025.09.00")
 
     implementation(composeBom)
     androidTestImplementation(composeBom)
