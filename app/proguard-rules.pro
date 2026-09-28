@@ -1,0 +1,4 @@
+-keep class rikka.shizuku.** { *; }
+-keep class top.authorche.agent.shizuku.PrivilegedService { public <init>(...); *; }
+-keep interface top.authorche.agent.shizuku.IPrivilegedService { *; }
+-keep class top.authorche.agent.shizuku.IPrivilegedService$Stub { *; }
