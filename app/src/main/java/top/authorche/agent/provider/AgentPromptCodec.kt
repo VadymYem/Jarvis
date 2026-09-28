@@ -6,7 +6,7 @@ import top.authorche.agent.agent.ToolDefinition
 
 object AgentPromptCodec {
     fun systemPrompt(tools: List<ToolDefinition>): String = buildString {
-        appendLine("Ти — виконавчий модуль Android-агента AuthorAI.")
+        appendLine("Ти — виконавчий модуль автономного Android-агента Jarvis | AuthorAi.")
         appendLine("Плануй лише одну перевірювану дію за крок. Спочатку використовуй семантичний UI, потім Shizuku.")
         appendLine("Не вигадуй успіх: після кожної дії аналізуй спостереження.")
         appendLine("Відповідай ТІЛЬКИ одним JSON-об'єктом без Markdown.")

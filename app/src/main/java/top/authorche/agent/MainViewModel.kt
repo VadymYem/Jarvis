@@ -1,26 +1,108 @@
 package top.authorche.agent
 
 import android.app.Application
+import android.content.Intent
 import android.net.Uri
+import android.os.BatteryManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import top.authorche.agent.agent.AgentUiState
 import top.authorche.agent.provider.ProviderSettings
 import top.authorche.agent.provider.ProviderKind
+import top.authorche.agent.voice.VoiceCommand
+import top.authorche.agent.voice.VoiceCommandParser
+import top.authorche.agent.voice.VoiceProfile
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val graph = (application as AuthorAgentApplication).graph
     val state: StateFlow<AgentUiState> = graph.orchestrator.state
     private val mutableModelImportStatus = MutableStateFlow<String?>(null)
     val modelImportStatus: StateFlow<String?> = mutableModelImportStatus.asStateFlow()
+    private val mutableVoiceStatus = MutableStateFlow("Голосовий режим готовий")
+    val voiceStatus: StateFlow<String> = mutableVoiceStatus.asStateFlow()
+    private var voiceAnswerPending = false
+    private var lastSpokenAnswer: String? = null
+
+    init {
+        viewModelScope.launch {
+            state.collect { current ->
+                if (!voiceAnswerPending || current.running) return@collect
+                val answer = current.finalAnswer ?: current.error?.let { "Помилка: $it" }
+                if (!answer.isNullOrBlank() && answer != lastSpokenAnswer) {
+                    lastSpokenAnswer = answer
+                    voiceAnswerPending = false
+                    mutableVoiceStatus.value = answer
+                    speakIfEnabled(answer)
+                }
+            }
+        }
+    }
 
     fun run(task: String) {
+        voiceAnswerPending = false
         viewModelScope.launch { graph.orchestrator.run(task) }
     }
+
+    fun handleVoiceCommand(spokenText: String) {
+        when (val command = VoiceCommandParser.parse(spokenText)) {
+            VoiceCommand.FindPhone -> findPhone()
+            VoiceCommand.StopFindingPhone -> stopFindingPhone()
+            VoiceCommand.TellTime -> respondLocally(
+                "Зараз ${ZonedDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))}",
+            )
+            VoiceCommand.TellBattery -> {
+                val battery = getApplication<Application>()
+                    .getSystemService(BatteryManager::class.java)
+                    .getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                respondLocally(if (battery in 0..100) "Заряд батареї $battery відсотків" else "Не вдалося прочитати заряд батареї")
+            }
+            is VoiceCommand.AgentTask -> {
+                if (command.text.isBlank()) return
+                mutableVoiceStatus.value = "Виконую: ${command.text}"
+                voiceAnswerPending = true
+                lastSpokenAnswer = null
+                viewModelScope.launch { graph.orchestrator.run(command.text) }
+            }
+        }
+    }
+
+    fun findPhone() {
+        graph.phoneFinder.start()
+        respondLocally("Я тут. Вмикаю was-wollen-wir-trinken.mp3 із папки Downloads.")
+    }
+
+    fun stopFindingPhone() {
+        graph.phoneFinder.stop()
+        respondLocally("Сигнал пошуку телефона зупинено")
+    }
+
+    fun loadVoiceProfile(): VoiceProfile = graph.voiceProfile.load()
+
+    fun setVoiceReference(uri: Uri) {
+        persistReadPermission(uri)
+        graph.voiceProfile.setReferenceAudio(uri)
+        mutableVoiceStatus.value = "Еталон голосу збережено приватно на пристрої"
+    }
+
+    fun setFindPhoneTrack(uri: Uri) {
+        persistReadPermission(uri)
+        graph.voiceProfile.setFindPhoneTrack(uri)
+        mutableVoiceStatus.value = "Музику для пошуку телефона збережено"
+    }
+
+    fun setSpeakResponses(enabled: Boolean) {
+        graph.voiceProfile.setSpeakResponses(enabled)
+        if (!enabled) graph.voiceOutput.stop()
+    }
+
+    fun previewVoice() = respondLocally("Jarvis | AuthorAi на зв'язку")
 
     fun confirm(approved: Boolean) = graph.orchestrator.respondToConfirmation(approved)
 
@@ -48,6 +130,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .onFailure { error ->
                     mutableModelImportStatus.value = error.message ?: "Не вдалося імпортувати модель"
                 }
+        }
+    }
+
+    private fun respondLocally(message: String) {
+        mutableVoiceStatus.value = message
+        speakIfEnabled(message)
+    }
+
+    private fun speakIfEnabled(message: String) {
+        if (graph.voiceProfile.load().speakResponses) graph.voiceOutput.speak(message)
+    }
+
+    private fun persistReadPermission(uri: Uri) {
+        runCatching {
+            getApplication<Application>().contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
         }
     }
 }

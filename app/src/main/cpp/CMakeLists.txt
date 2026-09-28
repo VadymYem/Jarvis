@@ -14,7 +14,7 @@ if(ANDROID_ABI STREQUAL "arm64-v8a")
     set(GGML_CPU_KLEIDIAI ON CACHE BOOL "Use KleidiAI kernels" FORCE)
     set(GGML_OPENMP ON CACHE BOOL "Use OpenMP" FORCE)
 else()
-    message(FATAL_ERROR "AuthorAI Local GGUF currently supports arm64-v8a only")
+    message(FATAL_ERROR "Jarvis | AuthorAi Local GGUF currently supports arm64-v8a only")
 endif()
 
 FetchContent_Declare(

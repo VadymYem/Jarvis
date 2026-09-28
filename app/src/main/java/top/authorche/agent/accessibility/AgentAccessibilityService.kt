@@ -101,7 +101,7 @@ class AgentAccessibilityService : AccessibilityService() {
         }
 
         private fun requireService(): AgentAccessibilityService = instance.get()
-            ?: error("Увімкніть службу спеціальних можливостей AuthorAI")
+            ?: error("Увімкніть службу спеціальних можливостей Jarvis | AuthorAi")
 
         private fun breadthFirst(root: AccessibilityNodeInfo): List<AccessibilityNodeInfo> {
             val result = mutableListOf<AccessibilityNodeInfo>()

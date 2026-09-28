@@ -1,8 +1,8 @@
-# AuthorAI Agent
+# Jarvis | AuthorAi
 
-**Ваш приватний агент дій для Android — by AuthorChe.**
+**Ваш приватний голосовий AI-агент для Android — by AuthorChe.**
 
-AuthorAI Agent приймає завдання природною мовою, планує короткі перевірювані кроки та взаємодіє з Android через семантичне дерево інтерфейсу, системні Android API й дозволені ADB-операції через Shizuku.
+Jarvis | AuthorAi приймає текстові й голосові завдання, планує короткі перевірювані кроки та взаємодіє з Android через семантичне дерево інтерфейсу, системні Android API й дозволені ADB-операції через Shizuku. Застосунок повністю автономний від `ai.authorche.top`.
 
 > Технології можуть бути красивими, коли в них є душа.
 
@@ -13,6 +13,13 @@ AuthorAI Agent приймає завдання природною мовою, п
 - локальні `.gguf`-моделі через нативний `llama.cpp` без інтернету;
 - нативний Gemini API;
 - OpenAI/GPT, Groq та інші OpenAI-сумісні HTTPS API;
+- голосовий режим із системним або on-device Android SpeechRecognizer;
+- локальні швидкі команди українською, російською, англійською й німецькою;
+- озвучення відповідей через Android TTS;
+- команда «Джарвіс, де ти?» без звернення до LLM;
+- реєстрація як системного цифрового помічника Android через Assistant role;
+- пошук `Downloads/was-wollen-wir-trinken.mp3`, циклічне гучне відтворення, вібрація та кнопка зупинки у сповіщенні;
+- локальний голосовий профіль з еталонним аудіо для майбутнього clone-TTS рушія;
 - шифрування API-ключа апаратно захищеним Android Keystore;
 - відкриття застосунків за назвою або package name;
 - читання Accessibility-дерева з маскуванням полів паролів;
@@ -27,7 +34,9 @@ AuthorAI Agent приймає завдання природною мовою, п
 
 ```mermaid
 flowchart TD
-    UI["AuthorAI UI"] --> LOOP["Agent Orchestrator"]
+    UI["Jarvis UI"] --> VOICE["Voice Command Router"]
+    VOICE --> LOOP["Agent Orchestrator"]
+    VOICE --> FAST["Local Fast Commands"]
     LOOP --> ROUTER["Model Router"]
     ROUTER --> LOCAL["Local GGUF"]
     ROUTER --> GEMINI["Gemini API"]
@@ -49,8 +58,9 @@ flowchart TD
 2. Встановіть Android SDK 36 і JDK 17.
 3. Зберіть `app` у варіанті `debug`.
 4. Встановіть [Shizuku](https://shizuku.rikka.app/download/) і запустіть його через Wireless debugging або root.
-5. У AuthorAI Agent увімкніть службу спеціальних можливостей і надайте Shizuku-дозвіл.
+5. У Jarvis | AuthorAi увімкніть службу спеціальних можливостей і надайте Shizuku-дозвіл.
 6. Відкрийте «Модель» й оберіть Local GGUF, Gemini, OpenAI/GPT, Groq або сумісний endpoint.
+7. Для пошуку телефона покладіть файл `was-wollen-wir-trinken.mp3` у системну папку `Downloads` і надайте доступ до музики при першому запуску голосового режиму.
 
 Для локального режиму імпортуйте файл `.gguf` через системний вибір файлів. Модель копіюється у приватне сховище застосунку, перевіряється за сигнатурою GGUF і виконується нативно через `llama.cpp`. Поточна native-збірка оптимізована для `arm64-v8a`.
 
@@ -67,11 +77,13 @@ gradle --no-daemon :app:assembleDebug :app:testDebugUnitTest
 - Тому проєкт не записує дзвінки приховано. Запланований режим голосових нотаток буде запускатися користувачем, показувати постійний індикатор і зберігати дані локально.
 - Accessibility-вміст не пишеться на диск за замовчуванням. Поля паролів маскуються до передавання моделі.
 - Довільна shell-команда від моделі ніколи не виконується: параметри перевіряє `CommandPolicy`.
+- Команди часу, заряду батареї та пошуку телефона виконуються локально до звернення до LLM.
+- Голосовий еталон і вибрана музика не завантажуються на сервер. Поточна версія не видає системний TTS за клон: справжній локальний clone-TTS підключатиметься окремим ONNX-модулем.
 
 Повний перелік: [FUNCTIONS.md](docs/FUNCTIONS.md). Докладніше про реалізацію: [ARCHITECTURE.md](docs/ARCHITECTURE.md), [ROADMAP.md](docs/ROADMAP.md), [SECURITY.md](SECURITY.md).
 
 ## Ліцензія
 
-AuthorAI Agent поширюється за GNU AGPL-3.0-only. Сторонні компоненти та джерела архітектурних ідей перелічені в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Jarvis | AuthorAi поширюється за GNU AGPL-3.0-only. Сторонні компоненти та джерела архітектурних ідей перелічені в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 © 2026 Vadym Yemelianov / AuthorChe

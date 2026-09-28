@@ -2,8 +2,10 @@ package top.authorche.agent
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.app.role.RoleManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
@@ -21,7 +23,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -45,9 +46,11 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -55,7 +58,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -63,6 +66,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import top.authorche.agent.accessibility.AgentAccessibilityService
 import top.authorche.agent.agent.AgentTraceEntry
 import top.authorche.agent.agent.PendingConfirmation
@@ -70,12 +75,17 @@ import top.authorche.agent.shizuku.ShizukuBridge
 import top.authorche.agent.shizuku.ShizukuState
 import top.authorche.agent.ui.AuthorTheme
 import top.authorche.agent.provider.ProviderKind
+import top.authorche.agent.voice.VoiceRecognitionController
+import top.authorche.agent.voice.VoiceRecognitionState
+import top.authorche.agent.voice.VoiceProfile
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
+    private val voiceInvocation = MutableStateFlow(0L)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (intent?.action == Intent.ACTION_ASSIST) voiceInvocation.value += 1
         enableEdgeToEdge()
         setContent {
             AuthorTheme {
@@ -84,9 +94,30 @@ class MainActivity : ComponentActivity() {
                     openAccessibility = {
                         startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                     },
+                    requestAssistantRole = ::requestAssistantRole,
+                    voiceInvocation = voiceInvocation,
                 )
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.action == Intent.ACTION_ASSIST) voiceInvocation.value += 1
+    }
+
+    private fun requestAssistantRole() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val roles = getSystemService(RoleManager::class.java)
+            if (roles.isRoleAvailable(RoleManager.ROLE_ASSISTANT) &&
+                !roles.isRoleHeld(RoleManager.ROLE_ASSISTANT)
+            ) {
+                startActivity(roles.createRequestRoleIntent(RoleManager.ROLE_ASSISTANT))
+                return
+            }
+        }
+        startActivity(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS))
     }
 }
 
@@ -95,13 +126,36 @@ class MainActivity : ComponentActivity() {
 private fun AuthorAgentScreen(
     viewModel: MainViewModel,
     openAccessibility: () -> Unit,
+    requestAssistantRole: () -> Unit,
+    voiceInvocation: StateFlow<Long>,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val shizukuState by ShizukuBridge.state.collectAsStateWithLifecycle()
     var accessibilityReady by remember { mutableStateOf(AgentAccessibilityService.isConnected()) }
     var task by remember { mutableStateOf("") }
     var showSettings by remember { mutableStateOf(false) }
+    var showVoiceSettings by remember { mutableStateOf(false) }
+    var voiceRecognition by remember { mutableStateOf(VoiceRecognitionState()) }
+    var pendingVoiceStart by remember { mutableStateOf(false) }
+    var pendingPhoneFind by remember { mutableStateOf(false) }
     val modelImportStatus by viewModel.modelImportStatus.collectAsStateWithLifecycle()
+    val voiceStatus by viewModel.voiceStatus.collectAsStateWithLifecycle()
+    val voiceInvocationId by voiceInvocation.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    val voiceController = remember(context, viewModel) {
+        VoiceRecognitionController(
+            context = context,
+            onState = { voiceRecognition = it },
+            onResult = { recognized ->
+                task = recognized
+                viewModel.handleVoiceCommand(recognized)
+            },
+        )
+    }
+    DisposableEffect(voiceController) {
+        onDispose { voiceController.close() }
+    }
 
     val notificationPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -109,6 +163,25 @@ private fun AuthorAgentScreen(
     val modelPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri -> uri?.let(viewModel::importLocalModel) }
+    val voiceReferencePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri -> uri?.let(viewModel::setVoiceReference) }
+    val finderTrackPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri -> uri?.let(viewModel::setFindPhoneTrack) }
+    val voicePermissions = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) {
+        if (pendingPhoneFind) viewModel.findPhone()
+        if (
+            pendingVoiceStart &&
+            context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        ) {
+            voiceController.start()
+        }
+        pendingPhoneFind = false
+        pendingVoiceStart = false
+    }
     LaunchedEffect(Unit) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -117,6 +190,18 @@ private fun AuthorAgentScreen(
             accessibilityReady = AgentAccessibilityService.isConnected()
             ShizukuBridge.refresh()
             delay(1_000)
+        }
+    }
+    LaunchedEffect(voiceInvocationId) {
+        if (voiceInvocationId <= 0) return@LaunchedEffect
+        val missing = requiredVoicePermissions().filter {
+            context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) {
+            voiceController.start()
+        } else {
+            pendingVoiceStart = true
+            voicePermissions.launch(missing.toTypedArray())
         }
     }
 
@@ -140,6 +225,38 @@ private fun AuthorAgentScreen(
                     shizukuState = shizukuState,
                     onAccessibility = openAccessibility,
                     onShizuku = ShizukuBridge::requestPermission,
+                )
+            }
+            item {
+                VoiceCard(
+                    recognition = voiceRecognition,
+                    status = voiceStatus,
+                    onListen = {
+                        val missing = requiredVoicePermissions().filter {
+                            context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+                        }
+                        if (missing.isEmpty()) {
+                            voiceController.start()
+                        } else {
+                            pendingVoiceStart = true
+                            voicePermissions.launch(missing.toTypedArray())
+                        }
+                    },
+                    onStopListening = voiceController::stop,
+                    onFindPhone = {
+                        val permission = mediaAudioPermission()
+                        if (permission == null ||
+                            context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+                        ) {
+                            viewModel.findPhone()
+                        } else {
+                            pendingPhoneFind = true
+                            voicePermissions.launch(arrayOf(permission))
+                        }
+                    },
+                    onStopFinding = viewModel::stopFindingPhone,
+                    onSettings = { showVoiceSettings = true },
+                    onBecomeAssistant = requestAssistantRole,
                 )
             }
             item {
@@ -194,6 +311,16 @@ private fun AuthorAgentScreen(
             },
         )
     }
+    if (showVoiceSettings) {
+        VoiceSettingsDialog(
+            initial = viewModel.loadVoiceProfile(),
+            onDismiss = { showVoiceSettings = false },
+            onReferenceAudio = { voiceReferencePicker.launch(arrayOf("audio/*")) },
+            onFinderTrack = { finderTrackPicker.launch(arrayOf("audio/mpeg", "audio/*")) },
+            onSpeakResponses = viewModel::setSpeakResponses,
+            onPreview = viewModel::previewVoice,
+        )
+    }
 }
 
 @Composable
@@ -211,7 +338,7 @@ private fun BrandHeader() {
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    text = "A",
+                    text = "J",
                     color = MaterialTheme.colorScheme.onPrimary,
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold,
@@ -219,12 +346,12 @@ private fun BrandHeader() {
             }
             Column(modifier = Modifier.padding(start = 13.dp)) {
                 Text(
-                    text = "AuthorAI Agent",
+                    text = "Jarvis | AuthorAi",
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = "by AuthorChe · Ваш приватний агент дій",
+                    text = "by AuthorChe · Приватний агент вашого телефона",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -237,6 +364,77 @@ private fun BrandHeader() {
             fontStyle = FontStyle.Italic,
             color = MaterialTheme.colorScheme.primary,
         )
+    }
+}
+
+@Composable
+private fun VoiceCard(
+    recognition: VoiceRecognitionState,
+    status: String,
+    onListen: () -> Unit,
+    onStopListening: () -> Unit,
+    onFindPhone: () -> Unit,
+    onStopFinding: () -> Unit,
+    onSettings: () -> Unit,
+    onBecomeAssistant: () -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = if (recognition.listening) {
+                MaterialTheme.colorScheme.secondaryContainer
+            } else {
+                MaterialTheme.colorScheme.surface
+            },
+        ),
+        shape = RoundedCornerShape(22.dp),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(36.dp)
+                        .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(if (recognition.listening) "●" else "🎙", color = MaterialTheme.colorScheme.primary)
+                }
+                Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                    Text("Голосовий режим", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        recognition.error ?: recognition.partialText.ifBlank { status },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (recognition.error == null) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        },
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                TextButton(onClick = onSettings) { Text("Голос") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = if (recognition.listening) onStopListening else onListen,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(if (recognition.listening) "Зупинити" else "Говорити")
+                }
+                OutlinedButton(onClick = onFindPhone) { Text("Я тут") }
+            }
+            Text(
+                "Скажіть: «Джарвіс, де ти?» — буде запущено Downloads/was-wollen-wir-trinken.mp3.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TextButton(onClick = onStopFinding, modifier = Modifier.align(Alignment.End)) {
+                Text("Зупинити сигнал пошуку")
+            }
+            OutlinedButton(onClick = onBecomeAssistant, modifier = Modifier.fillMaxWidth()) {
+                Text("Зробити системним помічником")
+            }
+        }
     }
 }
 
@@ -446,7 +644,7 @@ private fun ProviderSettingsDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Модель AuthorAI") },
+        title = { Text("Модель Jarvis | AuthorAi") },
         text = {
             Column(
                 modifier = Modifier
@@ -528,6 +726,80 @@ private fun ProviderSettingsDialog(
     )
 }
 
+@Composable
+private fun VoiceSettingsDialog(
+    initial: VoiceProfile,
+    onDismiss: () -> Unit,
+    onReferenceAudio: () -> Unit,
+    onFinderTrack: () -> Unit,
+    onSpeakResponses: (Boolean) -> Unit,
+    onPreview: () -> Unit,
+) {
+    var speakResponses by remember { mutableStateOf(initial.speakResponses) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Голос і голосовий зліпок") },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Text(
+                    "Голосові команди розпізнаються локально, якщо пристрій має on-device speech service. " +
+                        "Відповіді зараз озвучує системний TTS Android.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Озвучувати відповіді", fontWeight = FontWeight.Medium)
+                        Text("Працює і для локальної GGUF-моделі", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Switch(
+                        checked = speakResponses,
+                        onCheckedChange = {
+                            speakResponses = it
+                            onSpeakResponses(it)
+                        },
+                    )
+                }
+                HorizontalDivider()
+                Text("Голосовий зліпок", fontWeight = FontWeight.SemiBold)
+                Text(
+                    initial.referenceAudioUri?.lastPathSegment?.let { "Еталон збережено: $it" }
+                        ?: "Еталон голосу ще не додано",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(onClick = onReferenceAudio, modifier = Modifier.fillMaxWidth()) {
+                    Text("Імпортувати еталон голосу")
+                }
+                Text(
+                    "Еталон зберігається як приватне локальне посилання. Справжній clone‑TTS буде " +
+                        "вмикатися лише після встановлення сумісного локального ONNX‑рушія; системний " +
+                        "голос не видається за клон.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
+                HorizontalDivider()
+                Text("Музика пошуку телефона", fontWeight = FontWeight.SemiBold)
+                Text(
+                    initial.findPhoneTrackUri?.lastPathSegment
+                        ?: "Автопошук: Downloads/was-wollen-wir-trinken.mp3",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                OutlinedButton(onClick = onFinderTrack, modifier = Modifier.fillMaxWidth()) {
+                    Text("Обрати файл вручну")
+                }
+                OutlinedButton(onClick = onPreview, modifier = Modifier.fillMaxWidth()) {
+                    Text("Перевірити голос")
+                }
+            }
+        },
+        confirmButton = { Button(onClick = onDismiss) { Text("Готово") } },
+    )
+}
+
 private fun top.authorche.agent.agent.RiskLevel.ukrainianName(): String = when (this) {
     top.authorche.agent.agent.RiskLevel.LOW -> "низький"
     top.authorche.agent.agent.RiskLevel.MEDIUM -> "середній"
@@ -552,4 +824,15 @@ private fun AuthorFooter() {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+}
+
+private fun requiredVoicePermissions(): List<String> = buildList {
+    add(Manifest.permission.RECORD_AUDIO)
+    mediaAudioPermission()?.let(::add)
+}
+
+private fun mediaAudioPermission(): String? = when {
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> Manifest.permission.READ_MEDIA_AUDIO
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.M -> Manifest.permission.READ_EXTERNAL_STORAGE
+    else -> null
 }

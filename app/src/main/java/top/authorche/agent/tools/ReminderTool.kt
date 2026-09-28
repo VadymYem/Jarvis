@@ -36,7 +36,7 @@ class ReminderTool(context: Context) : AgentTool {
         "Створити нагадування «${arguments.optString("title", "Нагадування") }»"
 
     override suspend fun execute(arguments: JSONObject): ToolResult = runCatching {
-        val title = arguments.optString("title", "Нагадування AuthorAI").take(120)
+        val title = arguments.optString("title", "Нагадування Jarvis | AuthorAi").take(120)
         val message = arguments.optString("message").take(500)
         val delay = arguments.optLong("delay_minutes", -1)
         require(delay in 1..525_600) { "Затримка має бути від 1 хвилини до 1 року" }
@@ -68,7 +68,7 @@ class ReminderWorker(
         ) {
             return Result.failure()
         }
-        val title = inputData.getString(KEY_TITLE) ?: "Нагадування AuthorAI"
+        val title = inputData.getString(KEY_TITLE) ?: "Нагадування Jarvis | AuthorAi"
         val message = inputData.getString(KEY_MESSAGE) ?: return Result.failure()
         val notification = NotificationCompat.Builder(
             applicationContext,
