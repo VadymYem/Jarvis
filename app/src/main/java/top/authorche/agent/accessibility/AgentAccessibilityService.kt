@@ -135,7 +135,8 @@ class AgentAccessibilityService : AccessibilityService() {
                 if (node.isChecked) add("checked")
             }.joinToString(",")
             if (text.isNotBlank() || flags.isNotBlank()) {
-                lines += "${"  ".repeat(depth.coerceAtMost(8))}${node.className?.substringAfterLast('.')} text=\"$text\" [$flags]"
+                val className = node.className?.toString()?.substringAfterLast('.').orEmpty()
+                lines += "${"  ".repeat(depth.coerceAtMost(8))}$className text=\"$text\" [$flags]"
             }
             repeat(node.childCount) { index ->
                 node.getChild(index)?.let { child -> collectNodes(child, lines, depth + 1) }

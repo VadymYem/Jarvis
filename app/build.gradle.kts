@@ -36,7 +36,6 @@ android {
         isCoreLibraryDesugaringEnabled = true
     }
 
-    kotlinOptions.jvmTarget = "17"
     buildFeatures {
         compose = true
         aidl = true
@@ -47,6 +46,12 @@ android {
         "/META-INF/{AL2.0,LGPL2.1}",
         "META-INF/DEPENDENCIES",
     )
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
 }
 
 dependencies {
