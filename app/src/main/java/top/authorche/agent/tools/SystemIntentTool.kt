@@ -1,10 +1,10 @@
 package top.authorche.agent.tools
 
-import android.app.AlarmClock
 import android.app.SearchManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.AlarmClock
 import android.provider.CalendarContract
 import android.provider.MediaStore
 import java.time.Instant

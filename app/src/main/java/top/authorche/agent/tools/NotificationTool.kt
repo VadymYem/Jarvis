@@ -31,21 +31,26 @@ class NotificationTool : AgentTool {
         else -> "Некоректна дія зі сповіщеннями"
     }
 
-    override suspend fun execute(arguments: JSONObject): ToolResult = when (arguments.optString("operation")) {
-        "list" -> list(arguments)
-        "dismiss" -> NotificationBridge.dismiss(arguments.requireKey()).fold(
-            onSuccess = { ToolResult(true, "Сповіщення відхилено") },
-            onFailure = { ToolResult(false, it.message ?: "Не вдалося відхилити сповіщення") },
-        )
-        "reply" -> {
-            val message = arguments.optString("message").trim().take(4_000)
-            if (message.isBlank()) return ToolResult(false, "Текст відповіді порожній")
-            NotificationBridge.reply(arguments.requireKey(), message).fold(
-                onSuccess = { ToolResult(true, "Швидку відповідь надіслано") },
-                onFailure = { ToolResult(false, it.message ?: "Швидку відповідь не надіслано") },
+    override suspend fun execute(arguments: JSONObject): ToolResult {
+        return when (arguments.optString("operation")) {
+            "list" -> list(arguments)
+            "dismiss" -> NotificationBridge.dismiss(arguments.requireKey()).fold(
+                onSuccess = { ToolResult(true, "Сповіщення відхилено") },
+                onFailure = { ToolResult(false, it.message ?: "Не вдалося відхилити сповіщення") },
             )
+            "reply" -> {
+                val message = arguments.optString("message").trim().take(4_000)
+                if (message.isBlank()) {
+                    ToolResult(false, "Текст відповіді порожній")
+                } else {
+                    NotificationBridge.reply(arguments.requireKey(), message).fold(
+                        onSuccess = { ToolResult(true, "Швидку відповідь надіслано") },
+                        onFailure = { ToolResult(false, it.message ?: "Швидку відповідь не надіслано") },
+                    )
+                }
+            }
+            else -> ToolResult(false, "Непідтримувана дія зі сповіщеннями")
         }
-        else -> ToolResult(false, "Непідтримувана дія зі сповіщеннями")
     }
 
     private fun list(arguments: JSONObject): ToolResult {
