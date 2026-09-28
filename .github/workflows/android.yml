@@ -35,7 +35,7 @@ jobs:
           cache-read-only: ${{ github.event_name == 'pull_request' }}
 
       - name: Build and test
-        run: gradle --no-daemon --stacktrace :app:assembleDebug test
+        run: gradle --no-daemon --stacktrace :app:assembleDebug :app:testDebugUnitTest
 
       - name: Upload debug APK
         if: success()

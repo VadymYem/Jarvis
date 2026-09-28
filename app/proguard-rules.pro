@@ -2,3 +2,4 @@
 -keep class top.authorche.agent.shizuku.PrivilegedService { public <init>(...); *; }
 -keep interface top.authorche.agent.shizuku.IPrivilegedService { *; }
 -keep class top.authorche.agent.shizuku.IPrivilegedService$Stub { *; }
+-keep class com.arm.aichat.** { *; }

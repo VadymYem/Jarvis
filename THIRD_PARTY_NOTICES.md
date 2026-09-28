@@ -18,6 +18,13 @@
 - License: MIT
 - Use: research reference for the mobile GUI-agent observe/act/reflect workflow. Its Python ADB implementation is not embedded.
 
+## llama.cpp
+
+- Repository: https://github.com/ggml-org/llama.cpp
+- Pinned commit: `ed7ac35e1ee49cb70e4dfa9f0a2ce39b0a5ec4ea`
+- License: MIT
+- Use: native arm64-v8a inference for user-provided GGUF models. The JNI layer is based on the official Android example from the same pinned revision.
+
 ## AndroidX, Kotlin, OkHttp
 
 Dependency license metadata is preserved in the built artifacts. Release builds must generate a complete dependency license report before public distribution.

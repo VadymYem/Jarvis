@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -37,6 +38,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -67,6 +69,7 @@ import top.authorche.agent.agent.PendingConfirmation
 import top.authorche.agent.shizuku.ShizukuBridge
 import top.authorche.agent.shizuku.ShizukuState
 import top.authorche.agent.ui.AuthorTheme
+import top.authorche.agent.provider.ProviderKind
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
@@ -98,10 +101,14 @@ private fun AuthorAgentScreen(
     var accessibilityReady by remember { mutableStateOf(AgentAccessibilityService.isConnected()) }
     var task by remember { mutableStateOf("") }
     var showSettings by remember { mutableStateOf(false) }
+    val modelImportStatus by viewModel.modelImportStatus.collectAsStateWithLifecycle()
 
     val notificationPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { }
+    val modelPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri -> uri?.let(viewModel::importLocalModel) }
     LaunchedEffect(Unit) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -177,9 +184,12 @@ private fun AuthorAgentScreen(
     if (showSettings) {
         ProviderSettingsDialog(
             initial = viewModel.loadSettings(),
+            importStatus = modelImportStatus,
+            loadProvider = viewModel::loadSettings,
             onDismiss = { showSettings = false },
-            onSave = { endpoint, model, key ->
-                viewModel.saveSettings(endpoint, model, key)
+            onImportModel = { modelPicker.launch(arrayOf("application/octet-stream", "*/*")) },
+            onSave = { provider, endpoint, model, key ->
+                viewModel.saveSettings(provider, endpoint, model, key)
                 showSettings = false
             },
         )
@@ -422,9 +432,13 @@ private fun ConfirmationDialog(
 @Composable
 private fun ProviderSettingsDialog(
     initial: top.authorche.agent.provider.ProviderSettings,
+    importStatus: String?,
+    loadProvider: (ProviderKind) -> top.authorche.agent.provider.ProviderSettings,
     onDismiss: () -> Unit,
-    onSave: (String, String, String) -> Unit,
+    onImportModel: () -> Unit,
+    onSave: (ProviderKind, String, String, String) -> Unit,
 ) {
+    var provider by remember { mutableStateOf(initial.provider) }
     var endpoint by remember { mutableStateOf(initial.endpoint) }
     var model by remember { mutableStateOf(initial.model) }
     var key by remember { mutableStateOf(initial.apiKey) }
@@ -435,38 +449,78 @@ private fun ProviderSettingsDialog(
         title = { Text("Модель AuthorAI") },
         text = {
             Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(
-                    "Підтримується OpenAI-сумісний HTTPS API. Ключ шифрується Android Keystore.",
+                    "Оберіть локальну GGUF-модель, Gemini або OpenAI-сумісний API. Ключі шифруються Android Keystore.",
                     style = MaterialTheme.typography.bodySmall,
                 )
-                OutlinedTextField(
-                    value = endpoint,
-                    onValueChange = { endpoint = it },
-                    label = { Text("API endpoint") },
-                    singleLine = true,
-                )
-                OutlinedTextField(
-                    value = model,
-                    onValueChange = { model = it },
-                    label = { Text("Модель") },
-                    singleLine = true,
-                )
-                OutlinedTextField(
-                    value = key,
-                    onValueChange = { key = it },
-                    label = { Text("API-ключ") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    singleLine = true,
-                )
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    ProviderKind.entries.forEach { item ->
+                        FilterChip(
+                            selected = item == provider,
+                            onClick = {
+                                provider = item
+                                loadProvider(item).also { saved ->
+                                    endpoint = saved.endpoint
+                                    model = saved.model
+                                    key = saved.apiKey
+                                }
+                                error = null
+                            },
+                            label = { Text(item.title) },
+                        )
+                    }
+                }
+                if (provider == ProviderKind.LOCAL_GGUF) {
+                    Text(
+                        text = initial.localModelPath.substringAfterLast('/').ifBlank {
+                            "GGUF-модель ще не імпортована"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    OutlinedButton(onClick = onImportModel, modifier = Modifier.fillMaxWidth()) {
+                        Text("Імпортувати .gguf")
+                    }
+                    importStatus?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    }
+                } else {
+                    OutlinedTextField(
+                        value = endpoint,
+                        onValueChange = { endpoint = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("API endpoint") },
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = model,
+                        onValueChange = { model = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Модель") },
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = key,
+                        onValueChange = { key = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("API-ключ") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                    )
+                }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         },
         confirmButton = {
             Button(onClick = {
-                runCatching { onSave(endpoint, model, key) }
+                runCatching { onSave(provider, endpoint, model, key) }
                     .onFailure { error = it.message }
             }) { Text("Зберегти") }
         },

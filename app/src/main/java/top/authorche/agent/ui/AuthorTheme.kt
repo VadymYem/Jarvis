@@ -8,14 +8,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 private val AuthorLightColors = lightColorScheme(
-    primary = Color(0xFF668875),
+    primary = Color(0xFF587563),
     onPrimary = Color(0xFFFFFFFF),
     primaryContainer = Color(0xFFDCEADF),
     onPrimaryContainer = Color(0xFF1F382B),
     secondary = Color(0xFF7D748D),
     onSecondary = Color.White,
     secondaryContainer = Color(0xFFE8E2F0),
-    tertiary = Color(0xFF9B6E62),
+    tertiary = Color(0xFF8B5D52),
     tertiaryContainer = Color(0xFFF4DDD6),
     background = Color(0xFFF7F4F1),
     onBackground = Color(0xFF2E2925),

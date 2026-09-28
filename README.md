@@ -10,7 +10,9 @@ AuthorAI Agent приймає завдання природною мовою, п
 
 - нативний Android-застосунок на Kotlin і Jetpack Compose;
 - агентний цикл `plan → approve → act → observe → verify` до 16 кроків;
-- OpenAI-сумісні HTTPS-провайдери без вбудованого ключа;
+- локальні `.gguf`-моделі через нативний `llama.cpp` без інтернету;
+- нативний Gemini API;
+- OpenAI/GPT, Groq та інші OpenAI-сумісні HTTPS API;
 - шифрування API-ключа апаратно захищеним Android Keystore;
 - відкриття застосунків за назвою або package name;
 - читання Accessibility-дерева з маскуванням полів паролів;
@@ -26,7 +28,10 @@ AuthorAI Agent приймає завдання природною мовою, п
 ```mermaid
 flowchart TD
     UI["AuthorAI UI"] --> LOOP["Agent Orchestrator"]
-    LOOP --> LLM["OpenAI-compatible LLM"]
+    LOOP --> ROUTER["Model Router"]
+    ROUTER --> LOCAL["Local GGUF"]
+    ROUTER --> GEMINI["Gemini API"]
+    ROUTER --> CLOUD["OpenAI-compatible API"]
     LOOP --> POLICY["Risk Policy"]
     POLICY --> TOOLS["Tool Registry"]
     TOOLS --> A11Y["Accessibility"]
@@ -45,12 +50,14 @@ flowchart TD
 3. Зберіть `app` у варіанті `debug`.
 4. Встановіть [Shizuku](https://shizuku.rikka.app/download/) і запустіть його через Wireless debugging або root.
 5. У AuthorAI Agent увімкніть службу спеціальних можливостей і надайте Shizuku-дозвіл.
-6. Відкрийте «Модель», вкажіть HTTPS endpoint, назву моделі та API-ключ.
+6. Відкрийте «Модель» й оберіть Local GGUF, Gemini, OpenAI/GPT, Groq або сумісний endpoint.
+
+Для локального режиму імпортуйте файл `.gguf` через системний вибір файлів. Модель копіюється у приватне сховище застосунку, перевіряється за сигнатурою GGUF і виконується нативно через `llama.cpp`. Поточна native-збірка оптимізована для `arm64-v8a`.
 
 Командна збірка з установленим Gradle 8.13:
 
 ```bash
-gradle --no-daemon :app:assembleDebug test
+gradle --no-daemon :app:assembleDebug :app:testDebugUnitTest
 ```
 
 ## Межі Android і приватність
