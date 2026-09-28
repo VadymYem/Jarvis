@@ -16,8 +16,8 @@ class UiAutomationTool : AgentTool {
     )
 
     override fun risk(arguments: JSONObject): RiskLevel = when (arguments.optString("operation")) {
-        "snapshot", "scroll_forward", "back", "home", "click_text" -> RiskLevel.LOW
-        "set_text" -> RiskLevel.MEDIUM
+        "snapshot", "scroll_forward", "back", "home" -> RiskLevel.LOW
+        "click_text", "set_text" -> RiskLevel.MEDIUM
         else -> RiskLevel.HIGH
     }
 

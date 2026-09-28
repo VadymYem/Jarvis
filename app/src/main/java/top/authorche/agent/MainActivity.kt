@@ -71,8 +71,12 @@ import kotlinx.coroutines.flow.StateFlow
 import top.authorche.agent.accessibility.AgentAccessibilityService
 import top.authorche.agent.agent.AgentTraceEntry
 import top.authorche.agent.agent.PendingConfirmation
+import top.authorche.agent.connectors.ConnectorRegistry
+import top.authorche.agent.connectors.ConnectorState
+import top.authorche.agent.connectors.ConnectorStatus
 import top.authorche.agent.shizuku.ShizukuBridge
 import top.authorche.agent.shizuku.ShizukuState
+import top.authorche.agent.termux.TermuxBridge
 import top.authorche.agent.ui.AuthorTheme
 import top.authorche.agent.provider.ProviderKind
 import top.authorche.agent.voice.VoiceRecognitionController
@@ -142,6 +146,8 @@ private fun AuthorAgentScreen(
     val voiceStatus by viewModel.voiceStatus.collectAsStateWithLifecycle()
     val voiceInvocationId by voiceInvocation.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    var emailConnector by remember(context) { mutableStateOf(ConnectorRegistry.email(context)) }
+    var termuxConnector by remember(context) { mutableStateOf(ConnectorRegistry.termux(context)) }
 
     val voiceController = remember(context, viewModel) {
         VoiceRecognitionController(
@@ -160,6 +166,11 @@ private fun AuthorAgentScreen(
     val notificationPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { }
+    val termuxPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) {
+        termuxConnector = ConnectorRegistry.termux(context)
+    }
     val modelPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri -> uri?.let(viewModel::importLocalModel) }
@@ -189,6 +200,8 @@ private fun AuthorAgentScreen(
         while (true) {
             accessibilityReady = AgentAccessibilityService.isConnected()
             ShizukuBridge.refresh()
+            emailConnector = ConnectorRegistry.email(context)
+            termuxConnector = ConnectorRegistry.termux(context)
             delay(1_000)
         }
     }
@@ -223,8 +236,22 @@ private fun AuthorAgentScreen(
                 CapabilityCard(
                     accessibilityReady = accessibilityReady,
                     shizukuState = shizukuState,
+                    emailConnector = emailConnector,
+                    termuxConnector = termuxConnector,
                     onAccessibility = openAccessibility,
                     onShizuku = ShizukuBridge::requestPermission,
+                    onTermux = {
+                        if (TermuxBridge.isInstalled(context)) {
+                            termuxPermission.launch(TermuxBridge.PERMISSION)
+                        } else {
+                            context.startActivity(
+                                Intent(
+                                    Intent.ACTION_VIEW,
+                                    Uri.parse("https://f-droid.org/packages/com.termux/"),
+                                ),
+                            )
+                        }
+                    },
                 )
             }
             item {
@@ -442,8 +469,11 @@ private fun VoiceCard(
 private fun CapabilityCard(
     accessibilityReady: Boolean,
     shizukuState: ShizukuState,
+    emailConnector: ConnectorStatus,
+    termuxConnector: ConnectorStatus,
     onAccessibility: () -> Unit,
     onShizuku: () -> Unit,
+    onTermux: () -> Unit,
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -470,6 +500,26 @@ private fun CapabilityCard(
                 },
                 action = if (shizukuState == ShizukuState.READY) null else "Підключити",
                 onAction = onShizuku,
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+            CapabilityRow(
+                title = emailConnector.title,
+                ready = emailConnector.state == ConnectorState.READY,
+                detail = emailConnector.detail,
+                action = null,
+                onAction = {},
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+            CapabilityRow(
+                title = termuxConnector.title,
+                ready = termuxConnector.state == ConnectorState.READY,
+                detail = termuxConnector.detail,
+                action = when (termuxConnector.state) {
+                    ConnectorState.READY -> null
+                    ConnectorState.PERMISSION_REQUIRED -> "Дозволити"
+                    ConnectorState.UNAVAILABLE -> "Встановити"
+                },
+                onAction = onTermux,
             )
         }
     }

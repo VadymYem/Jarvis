@@ -2,7 +2,7 @@
 
 **Ваш приватний голосовий AI-агент для Android — by AuthorChe.**
 
-Jarvis | AuthorAi приймає текстові й голосові завдання, планує короткі перевірювані кроки та взаємодіє з Android через семантичне дерево інтерфейсу, системні Android API й дозволені ADB-операції через Shizuku. Застосунок повністю автономний від `ai.authorche.top`.
+Jarvis | AuthorAi приймає текстові й голосові завдання, планує короткі перевірювані кроки та взаємодіє з Android, поштою, Termux і дозволеними ADB-операціями. Застосунок повністю автономний від `ai.authorche.top`.
 
 > Технології можуть бути красивими, коли в них є душа.
 
@@ -25,6 +25,10 @@ Jarvis | AuthorAi приймає текстові й голосові завда
 - читання Accessibility-дерева з маскуванням полів паролів;
 - натискання видимого елемента, введення тексту, прокручування, `Назад` і `Додому`;
 - локальні нагадування через WorkManager;
+- відкриття поштової скриньки й підготовка адресованої чернетки через встановлений поштовий клієнт;
+- читання та пошук листів через видимий поштовий UI й Accessibility, без прихованого доступу до акаунта;
+- Termux `RUN_COMMAND` із поверненням `stdout`, `stderr` і коду завершення;
+- типізовані Termux/ADB-операції та запуск лише сценаріїв із `~/.jarvis/actions/`;
 - Shizuku UserService із UID `shell` або `root`;
 - білий список ADB-дій: `force-stop`, Android Settings, key events, керування runtime permissions, `settings put`, читання активного Activity;
 - політика ризику `ALLOW / ASK / DENY` і журнал кожного кроку;
@@ -45,6 +49,7 @@ flowchart TD
     POLICY --> TOOLS["Tool Registry"]
     TOOLS --> A11Y["Accessibility"]
     TOOLS --> SHI["Shizuku UserService"]
+    TOOLS --> CONNECT["Email / Termux connectors"]
     TOOLS --> JOBS["WorkManager"]
     A11Y --> APPS["Android apps"]
     SHI --> SHELL["ADB / shell APIs"]
@@ -61,6 +66,9 @@ flowchart TD
 5. У Jarvis | AuthorAi увімкніть службу спеціальних можливостей і надайте Shizuku-дозвіл.
 6. Відкрийте «Модель» й оберіть Local GGUF, Gemini, OpenAI/GPT, Groq або сумісний endpoint.
 7. Для пошуку телефона покладіть файл `was-wollen-wir-trinken.mp3` у системну папку `Downloads` і надайте доступ до музики при першому запуску голосового режиму.
+8. Для Termux-дій установіть Termux, виконайте `pkg install android-tools`, задайте `allow-external-apps=true` у `~/.termux/termux.properties` і надайте Jarvis дозвіл `RUN_COMMAND` у блоці «Можливості пристрою».
+
+Користувацькі Termux-автоматизації зберігайте як executable-файли в `~/.jarvis/actions/`. Модель передає ім'я сценарію й окремий масив аргументів, але не може передати довільний shell-рядок.
 
 Для локального режиму імпортуйте файл `.gguf` через системний вибір файлів. Модель копіюється у приватне сховище застосунку, перевіряється за сигнатурою GGUF і виконується нативно через `llama.cpp`. Поточна native-збірка оптимізована для `arm64-v8a`.
 
@@ -77,10 +85,12 @@ gradle --no-daemon :app:assembleDebug :app:testDebugUnitTest
 - Тому проєкт не записує дзвінки приховано. Запланований режим голосових нотаток буде запускатися користувачем, показувати постійний індикатор і зберігати дані локально.
 - Accessibility-вміст не пишеться на диск за замовчуванням. Поля паролів маскуються до передавання моделі.
 - Довільна shell-команда від моделі ніколи не виконується: параметри перевіряє `CommandPolicy`.
+- Чернетка листа завжди відкривається у поштовому застосунку; надсилання або будь-яке UI-натискання потребує окремого підтвердження.
+- Termux приймає тільки команди, створені `TermuxCommandPolicy`; кожна Termux/ADB-дія потребує підтвердження.
 - Команди часу, заряду батареї та пошуку телефона виконуються локально до звернення до LLM.
 - Голосовий еталон і вибрана музика не завантажуються на сервер. Поточна версія не видає системний TTS за клон: справжній локальний clone-TTS підключатиметься окремим ONNX-модулем.
 
-Повний перелік: [FUNCTIONS.md](docs/FUNCTIONS.md). Докладніше про реалізацію: [ARCHITECTURE.md](docs/ARCHITECTURE.md), [ROADMAP.md](docs/ROADMAP.md), [SECURITY.md](SECURITY.md).
+Повний перелік: [FUNCTIONS.md](docs/FUNCTIONS.md). Докладніше про реалізацію: [ARCHITECTURE.md](docs/ARCHITECTURE.md), [CONNECTORS.md](docs/CONNECTORS.md), [ROADMAP.md](docs/ROADMAP.md), [SECURITY.md](SECURITY.md).
 
 ## Ліцензія
 

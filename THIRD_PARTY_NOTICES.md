@@ -12,6 +12,12 @@
 - License: MIT
 - Use: Maven dependencies `dev.rikka.shizuku:api` and `dev.rikka.shizuku:provider` plus the documented UserService integration.
 
+## Termux RUN_COMMAND API
+
+- Repository: https://github.com/termux/termux-app
+- License: GPL-3.0
+- Use: documented inter-app `RUN_COMMAND` Intent contract only. Termux source or binaries are not embedded in Jarvis | AuthorAi.
+
 ## Mobile-Agent
 
 - Repository: https://github.com/X-PLUG/MobileAgent

@@ -10,6 +10,8 @@ object AndroidTools {
         UiAutomationTool(),
         ReminderTool(context),
         FindPhoneTool(phoneFinder),
+        EmailAppTool(context),
+        TermuxTool(context),
         ShizukuTool(),
     )
 }
