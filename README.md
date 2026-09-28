@@ -1,77 +1,182 @@
-# AuthorAI Agent
+# Jarvis | AuthorAI
 
-**Ваш приватний агент дій для Android — by AuthorChe.**
+**Android AI agent architecture showcase by AuthorChe.**
 
-AuthorAI Agent приймає завдання природною мовою, планує короткі перевірювані кроки та взаємодіє з Android через семантичне дерево інтерфейсу, системні Android API й дозволені ADB-операції через Shizuku.
+> Portfolio repository — engineering case study, not a production distribution channel.
 
-> Технології можуть бути красивими, коли в них є душа.
+Jarvis | AuthorAI is a native Android proof-of-concept that explores how an AI agent can plan tasks, reason over Android UI state, call constrained tools, and execute privileged actions without giving the language model unrestricted access to the operating system.
 
-## Що вже працює
+The project is intentionally published as a **portfolio snapshot**. It demonstrates architecture, Android engineering, local inference, provider abstraction, permission boundaries, security controls, and agent orchestration. No production releases, hosted backend, managed user accounts, or public support lifecycle are provided from this repository.
 
-- нативний Android-застосунок на Kotlin і Jetpack Compose;
-- агентний цикл `plan → approve → act → observe → verify` до 16 кроків;
-- локальні `.gguf`-моделі через нативний `llama.cpp` без інтернету;
-- нативний Gemini API;
-- OpenAI/GPT, Groq та інші OpenAI-сумісні HTTPS API;
-- шифрування API-ключа апаратно захищеним Android Keystore;
-- відкриття застосунків за назвою або package name;
-- читання Accessibility-дерева з маскуванням полів паролів;
-- натискання видимого елемента, введення тексту, прокручування, `Назад` і `Додому`;
-- локальні нагадування через WorkManager;
-- Shizuku UserService із UID `shell` або `root`;
-- білий список ADB-дій: `force-stop`, Android Settings, key events, керування runtime permissions, `settings put`, читання активного Activity;
-- політика ризику `ALLOW / ASK / DENY` і журнал кожного кроку;
-- світла й темна тема AuthorChe.
+## What this project demonstrates
 
-## Архітектура
+- Native Android development with **Kotlin** and **Jetpack Compose**
+- Agent loop: `plan → approve → act → observe → verify`
+- Local `.gguf` inference through **llama.cpp / JNI**
+- Cloud model adapters for **Gemini**, **OpenAI**, **Groq**, and OpenAI-compatible HTTPS APIs
+- Provider routing behind a common `AgentProvider` contract
+- Android Accessibility-based semantic UI observation and automation
+- Privileged Android actions through **Shizuku UserService**
+- Risk-aware tool execution with `ALLOW / ASK / DENY`
+- Keystore-backed API credential encryption with **AES-GCM**
+- Local reminders with WorkManager
+- Explicit separation between model reasoning and Android execution
+- Unit-tested policy and command-boundary components
+- CI verification for reproducible portfolio builds
+
+## Architecture
 
 ```mermaid
 flowchart TD
-    UI["AuthorAI UI"] --> LOOP["Agent Orchestrator"]
-    LOOP --> ROUTER["Model Router"]
-    ROUTER --> LOCAL["Local GGUF"]
-    ROUTER --> GEMINI["Gemini API"]
-    ROUTER --> CLOUD["OpenAI-compatible API"]
-    LOOP --> POLICY["Risk Policy"]
-    POLICY --> TOOLS["Tool Registry"]
-    TOOLS --> A11Y["Accessibility"]
-    TOOLS --> SHI["Shizuku UserService"]
-    TOOLS --> JOBS["WorkManager"]
-    A11Y --> APPS["Android apps"]
-    SHI --> SHELL["ADB / shell APIs"]
+    UI["Compose UI"] --> ORCH["AgentOrchestrator"]
+    ORCH --> ROUTER["AgentProviderRouter"]
+
+    ROUTER --> LOCAL["Local GGUF / llama.cpp"]
+    ROUTER --> GEMINI["Gemini REST"]
+    ROUTER --> OPENAI["OpenAI-compatible REST"]
+
+    ORCH --> POLICY["PolicyEngine"]
+    POLICY --> REGISTRY["ToolRegistry"]
+
+    REGISTRY --> A11Y["Accessibility tools"]
+    REGISTRY --> SHIZUKU["Shizuku tools"]
+    REGISTRY --> WORK["WorkManager"]
+
+    SHIZUKU --> CMD["CommandPolicy"]
+    CMD --> USER["Privileged UserService"]
+
+    SETTINGS["AgentSettingsStore"] --> SECRETS["SecretStore"]
+    SECRETS --> KEYSTORE["Android Keystore"]
+    ROUTER --> SETTINGS
 ```
 
-Архітектурні принципи довготривалих задач, реєстру інструментів, політик і журналу дій узяті з досвіду [Capka](https://github.com/LyoSU/capka). Android-виконання спирається на офіційний [Shizuku API](https://github.com/RikkaApps/Shizuku-API). Підходи до `observe → act → reflect` звірені з [Mobile-Agent](https://github.com/X-PLUG/MobileAgent), але код Android-застосунку написаний окремо нативною мовою Kotlin.
+The model never receives a raw Android `Context`, Binder interface, Shizuku object, or arbitrary shell primitive. It can only request typed tools registered by the application. The orchestrator evaluates the requested action, applies the risk policy, asks the user for confirmation when required, and only then executes the tool.
 
-## Запуск
+## Security model
 
-1. Відкрийте репозиторій в актуальній Android Studio.
-2. Встановіть Android SDK 36 і JDK 17.
-3. Зберіть `app` у варіанті `debug`.
-4. Встановіть [Shizuku](https://shizuku.rikka.app/download/) і запустіть його через Wireless debugging або root.
-5. У AuthorAI Agent увімкніть службу спеціальних можливостей і надайте Shizuku-дозвіл.
-6. Відкрийте «Модель» й оберіть Local GGUF, Gemini, OpenAI/GPT, Groq або сумісний endpoint.
+The portfolio focuses heavily on privilege separation.
 
-Для локального режиму імпортуйте файл `.gguf` через системний вибір файлів. Модель копіюється у приватне сховище застосунку, перевіряється за сигнатурою GGUF і виконується нативно через `llama.cpp`. Поточна native-збірка оптимізована для `arm64-v8a`.
+| Boundary | Design |
+|---|---|
+| Model → Android | Typed tool contracts only |
+| Privileged actions | Shizuku UserService behind an allowlisted command policy |
+| Risky operations | Explicit confirmation for medium/high-risk actions |
+| Unknown shell actions | Denied |
+| API credentials | AES-GCM ciphertext with key material held by Android Keystore |
+| Cloud transport | HTTPS-only endpoints |
+| Android backup | Secrets, preferences, and local models excluded |
+| Accessibility passwords | Password nodes are masked before model use |
 
-Командна збірка з установленим Gradle 8.13:
+See [SECURITY.md](SECURITY.md) for the threat model and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the component design.
+
+## Authentication and credentials
+
+This snapshot intentionally has **no AuthorAI account system** and no application-level OAuth/JWT session layer.
+
+Cloud providers use user-supplied API credentials:
+
+```text
+User enters provider API key
+        ↓
+SecretStore
+        ↓
+AES-GCM encryption
+        ↓
+Android Keystore-backed key
+        ↓
+encrypted local SharedPreferences
+        ↓
+decrypted only when a provider request is made
+        ↓
+HTTPS request
+```
+
+OpenAI-compatible providers receive the credential through the standard `Authorization: Bearer …` header. Gemini uses `x-goog-api-key`. Local GGUF inference requires no network credential.
+
+Shizuku authorization is a separate Android permission flow controlled by Shizuku and Android, not by a token stored by this application.
+
+## Project structure
+
+```text
+app/src/main/java/top/authorche/agent/
+├── agent/          Agent loop, policies, tool contracts
+├── provider/       Local and cloud model providers
+├── security/       Keystore-backed credential storage
+├── accessibility/  Semantic Android UI bridge
+├── shizuku/        Privileged service and command policy
+├── tools/          Executable agent tools
+└── ui/             Compose theme and presentation
+
+docs/
+├── ARCHITECTURE.md
+├── CASE_STUDY.md
+└── FUNCTIONS.md
+```
+
+## Selected implementation details
+
+### Provider abstraction
+
+`AgentProviderRouter` selects local or cloud inference at runtime while the orchestrator depends only on the common `AgentProvider` interface. This keeps model choice independent from Android tool execution.
+
+### Constrained privileged execution
+
+The agent does not execute arbitrary model-generated shell strings. Privileged actions are represented as structured arguments, passed through the application policy layer, validated by `CommandPolicy`, and only then forwarded to the Shizuku-backed service.
+
+### Local-first model option
+
+A user-provided GGUF file is copied into app-private storage, validated before use, and executed locally through llama.cpp. The local path does not require an API key or cloud request.
+
+### Human-in-the-loop risk control
+
+The policy engine maps actions to four risk levels:
+
+- `LOW` → allowed
+- `MEDIUM` → user confirmation
+- `HIGH` → user confirmation
+- `CRITICAL` → denied
+
+This is deliberately simple and auditable for a portfolio implementation.
+
+## Build verification
+
+Requirements:
+
+- Android Studio with current Android tooling
+- Android SDK 36
+- JDK 17
+- Gradle 8.13
+
+Command-line verification:
 
 ```bash
 gradle --no-daemon :app:assembleDebug :app:testDebugUnitTest
 ```
 
-## Межі Android і приватність
+The GitHub Actions workflow performs build and unit-test verification only. It does **not** publish APKs or releases.
 
-- Захоплення екрана на звичайному Android вимагає видимого системного підтвердження MediaProjection для кожної сесії. Прихованої трансляції немає.
-- Звичайний застосунок не має права записувати обидві сторони телефонного дзвінка. `CAPTURE_AUDIO_OUTPUT` доступний лише привілейованим, попередньо встановленим застосункам. Shizuku не робить сторонній APK системним застосунком.
-- Тому проєкт не записує дзвінки приховано. Запланований режим голосових нотаток буде запускатися користувачем, показувати постійний індикатор і зберігати дані локально.
-- Accessibility-вміст не пишеться на диск за замовчуванням. Поля паролів маскуються до передавання моделі.
-- Довільна shell-команда від моделі ніколи не виконується: параметри перевіряє `CommandPolicy`.
+## Scope
 
-Повний перелік: [FUNCTIONS.md](docs/FUNCTIONS.md). Докладніше про реалізацію: [ARCHITECTURE.md](docs/ARCHITECTURE.md), [ROADMAP.md](docs/ROADMAP.md), [SECURITY.md](SECURITY.md).
+This repository is intended to demonstrate engineering decisions and source quality. It is not presented as:
 
-## Ліцензія
+- a production-ready personal assistant;
+- an app-store release;
+- a hosted SaaS product;
+- a supported binary distribution;
+- a finished autonomous-agent platform.
 
-AuthorAI Agent поширюється за GNU AGPL-3.0-only. Сторонні компоненти та джерела архітектурних ідей перелічені в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+The code remains buildable so reviewers can inspect real implementations rather than mockups.
+
+## Case study
+
+A concise engineering write-up covering the problem, architecture, security boundaries, trade-offs, and skills demonstrated is available in [docs/CASE_STUDY.md](docs/CASE_STUDY.md).
+
+## Third-party technology
+
+The project uses or references Shizuku API, llama.cpp, AndroidX, Kotlin, OkHttp, and published mobile-agent research/architecture work. Attribution and license notes are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## License
+
+GNU AGPL-3.0-only.
 
 © 2026 Vadym Yemelianov / AuthorChe
