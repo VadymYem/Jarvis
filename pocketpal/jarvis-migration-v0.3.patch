@@ -1,0 +1,31 @@
+diff --git a/src/store/PalStore.ts b/src/store/PalStore.ts
+--- a/src/store/PalStore.ts
++++ b/src/store/PalStore.ts
+@@ -781,6 +781,26 @@ class PalStore {
+         p => p.name === 'Jarvis' && p.source === 'local',
+       );
+       if (existing) {
++        const requiredTalents = [
++          {name: 'render_html', necessity: 'optional' as const},
++          {name: 'calculate', necessity: 'optional' as const},
++          {name: 'datetime', necessity: 'optional' as const},
++          {name: 'web_search', necessity: 'optional' as const},
++          {name: 'read_url', necessity: 'optional' as const},
++          {name: 'device_status', necessity: 'optional' as const},
++          {name: 'device_action', necessity: 'optional' as const},
++          {name: 'workspace', necessity: 'optional' as const},
++          {name: 'python_exec', necessity: 'optional' as const},
++        ];
++        const existingTalentNames = new Set(
++          existing.pact?.talents?.map(talent => talent.name) ?? [],
++        );
++        if (
++          requiredTalents.some(talent => !existingTalentNames.has(talent.name))
++        ) {
++          await this.updatePal(existing.id, {
++            pact: {talents: requiredTalents},
++          });
++        }
+         await AsyncStorage.setItem(JARVIS_SEEDED_KEY, 'true');
+         return;
+       }
