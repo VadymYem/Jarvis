@@ -297,7 +297,7 @@ new file mode 100644
 +
 +interface JarvisTermuxNative {
 +  getStatus(): Promise<TermuxStatus>;
-+  runPython(code: string, arguments: string[]): Promise<PythonResult>;
++  runPython(code: string, argv: string[]): Promise<PythonResult>;
 +}
 +
 +const native = NativeModules.JarvisTermuxModule as
