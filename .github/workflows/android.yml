@@ -18,7 +18,7 @@ jobs:
   verify:
     name: Build and unit tests
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -35,6 +35,10 @@ jobs:
         with:
           gradle-version: "8.13"
           cache-read-only: ${{ github.event_name == 'pull_request' }}
+
+      - name: Accept Android SDK licenses
+        run: |
+          printf 'y\n%.0s' {1..100} | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses
 
       - name: Verify portfolio snapshot
         run: gradle --no-daemon --stacktrace :app:assembleDebug :app:testDebugUnitTest

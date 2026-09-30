@@ -44,7 +44,28 @@ object BasicIntentRouter {
             else -> null
         } ?: return null
         if (observations.isNotEmpty()) return AgentDecision("Результат виконаної команди", null,
-            JSONObject(), observations.last().take(7000))
+            JSONObject(), formattedResult(observations.last()))
         return AgentDecision("Виконую просту команду без мережевої моделі", command.first, command.second, null)
+    }
+
+    private fun formattedResult(observation: String): String {
+        val marker = "; дані="
+        if (marker !in observation) return observation
+        val summary = observation.substringBefore(marker)
+        val data = runCatching { JSONObject(observation.substringAfter(marker)) }.getOrNull()
+            ?: return observation.take(7000)
+        val results = data.optJSONArray("results") ?: data.optJSONArray("apps")
+            ?: return summary
+        return buildString {
+            appendLine(summary)
+            for (index in 0 until minOf(results.length(), 8)) {
+                val item = results.optJSONObject(index) ?: continue
+                append("\n${index + 1}. ")
+                append(item.optString("title", item.optString("name")))
+                item.optString("snippet").takeIf { it.isNotBlank() }?.let { append(" — ${it.take(200)}") }
+                item.optString("url", item.optString("package"))
+                    .takeIf { it.isNotBlank() }?.let { append("\n$it") }
+            }
+        }.take(7000)
     }
 }
