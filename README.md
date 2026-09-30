@@ -1,4 +1,6 @@
-# Jarvis | AuthorAI
+# Jarvis | AuthorAI — Kotlin prototype
+
+> **Full Android test APK:** [PocketPal-based v0.1.0 prerelease](https://github.com/AuthorGramProject/aaa/releases/tag/v0.1.0-pocketpal), built from [`pocketpal-fork`](https://github.com/AuthorGramProject/aaa/tree/pocketpal-fork). This `main` branch is a smaller standalone Kotlin/Compose prototype. Its APK has different features and a different signing certificate; do not use its CI builds as the full PocketPal release.
 
 **Android AI agent architecture showcase by AuthorChe.**
 
@@ -162,11 +164,11 @@ base64 --decode signing/jarvis-debug.jks.b64 > signing/jarvis-debug.jks
 
 The private repository contains a stable **debug testing key** so later CI APKs can update one another. Anyone with access to the repository can copy this key. Never use it to sign a production or Play Store release. APKs created with earlier runner-generated debug keys require a one-time uninstall before this build can be installed.
 
-The GitHub Actions workflow verifies the build/tests and uploads a test APK artifact. It does **not** publish a release.
+The GitHub Actions workflow verifies the prototype build and unit tests. The PocketPal release is built by the workflow on `pocketpal-fork`.
 
 ## Scope
 
-The v0.3 snapshot adds a visible agent tool list, simple commands that work without a model, on-device app and selected-folder file search, Wikipedia and GitHub search without keys, optional SearXNG/Brave search, and a foreground turn-based voice session. The workflow uploads a debug APK for device testing. See [docs/FUNCTIONS.md](docs/FUNCTIONS.md) for exact capabilities and current boundaries.
+The v0.3 prototype adds a visible agent tool list, simple commands that work without a model, on-device app and selected-folder file search, Wikipedia and GitHub search without keys, optional SearXNG/Brave search, and a foreground turn-based voice session. See [docs/FUNCTIONS.md](docs/FUNCTIONS.md) for exact capabilities and current boundaries.
 
 This repository is intended to demonstrate engineering decisions and source quality. It is not presented as:
 
