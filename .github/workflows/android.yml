@@ -40,6 +40,9 @@ jobs:
         run: |
           printf 'y\n%.0s' {1..100} | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses
 
+      - name: Restore stable test signing key
+        run: base64 --decode signing/jarvis-debug.jks.b64 > signing/jarvis-debug.jks
+
       - name: Verify portfolio snapshot
         run: gradle --no-daemon --stacktrace :app:assembleDebug :app:testDebugUnitTest
 
@@ -47,6 +50,6 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: jarvis-authorai-v0.3-arm64-debug-apk
+          name: jarvis-authorai-v0.3.1-arm64-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 7

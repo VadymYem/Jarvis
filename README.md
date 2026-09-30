@@ -154,7 +154,15 @@ Command-line verification:
 gradle --no-daemon :app:assembleDebug :app:testDebugUnitTest
 ```
 
-The GitHub Actions workflow performs build and unit-test verification only. It does **not** publish APKs or releases.
+For local builds, decode the committed test key first:
+
+```bash
+base64 --decode signing/jarvis-debug.jks.b64 > signing/jarvis-debug.jks
+```
+
+The private repository contains a stable **debug testing key** so later CI APKs can update one another. Anyone with access to the repository can copy this key. Never use it to sign a production or Play Store release. APKs created with earlier runner-generated debug keys require a one-time uninstall before this build can be installed.
+
+The GitHub Actions workflow verifies the build/tests and uploads a test APK artifact. It does **not** publish a release.
 
 ## Scope
 

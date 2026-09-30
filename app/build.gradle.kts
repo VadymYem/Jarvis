@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -13,8 +15,8 @@ android {
         applicationId = "top.authorche.agent"
         minSdk = 30
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.3.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -39,6 +41,18 @@ android {
                     "-DGGML_LLAMAFILE=OFF",
                 )
             }
+        }
+    }
+
+    signingConfigs {
+        getByName("debug") {
+            val credentials = Properties().apply {
+                file("../signing/debug.properties").inputStream().use { stream -> load(stream) }
+            }
+            storeFile = file("../signing/jarvis-debug.jks")
+            storePassword = credentials.getProperty("storePassword")
+            keyAlias = credentials.getProperty("keyAlias")
+            keyPassword = credentials.getProperty("keyPassword")
         }
     }
 
