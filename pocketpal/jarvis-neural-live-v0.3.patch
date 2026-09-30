@@ -1,0 +1,116 @@
+diff --git a/src/voice/LiveVoicePanel.tsx b/src/voice/LiveVoicePanel.tsx
+--- a/src/voice/LiveVoicePanel.tsx
++++ b/src/voice/LiveVoicePanel.tsx
+@@ -8,9 +8,10 @@ import {
+ } from 'react-native';
+ import {observer} from 'mobx-react';
+ import {Button, Text} from 'react-native-paper';
+-import {chatSessionStore, modelStore, palStore} from '../store';
++import {chatSessionStore, modelStore, palStore, ttsStore} from '../store';
+ import {MessageType} from '../utils/types';
+ import {liveVoice} from './liveVoice';
++import {getEngine} from '../services/tts';
+ 
+ type Phase = 'idle' | 'listening' | 'thinking' | 'speaking';
+ 
+@@ -43,7 +44,8 @@ export const LiveVoicePanel = observer(
+       setPhase('idle');
+       liveVoice?.stopListening().catch(() => {});
+       liveVoice?.stopSpeaking().catch(() => {});
+-    }, []);
++      ttsStore.stop().catch(() => {});
++    }, []);
+ 
+     React.useEffect(
+       () => () => {
+@@ -51,6 +53,7 @@ export const LiveVoicePanel = observer(
+         if (timeout.current) clearTimeout(timeout.current);
+         liveVoice?.stopListening().catch(() => {});
+         liveVoice?.stopSpeaking().catch(() => {});
++        ttsStore.stop().catch(() => {});
+       },
+       [],
+     );
+@@ -104,9 +107,13 @@ export const LiveVoicePanel = observer(
+       if (timeout.current) clearTimeout(timeout.current);
+       const id = session.current;
+       setPhase('speaking');
+-      liveVoice
+-        .speak(text, 'uk-UA')
++      ttsStore
++        .play('jarvis-live:' + lastAnswer.id, text, {
++          voiceOverride: ttsStore.currentVoice ?? undefined,
++        })
+         .then(() => {
+           if (session.current === id) listen(id, localOnly);
+         })
+@@ -134,6 +141,28 @@ export const LiveVoicePanel = observer(
+       else Alert.alert('Jarvis', 'Агент ще ініціалізується. Спробуйте знову.');
+     };
+ 
++    const prepareUkrainianVoice = async () => {
++      ttsStore.setUserTTSOverride(true);
++      if (ttsStore.supertonicDownloadState !== 'ready') {
++        await ttsStore.downloadSupertonic();
++      }
++      if (ttsStore.supertonicDownloadState !== 'ready') {
++        throw new Error('Не вдалося підготувати локальну модель Supertonic.');
++      }
++      const voices = await getEngine('supertonic').getVoices();
++      const voice =
++        ttsStore.currentVoice?.engine === 'supertonic'
++          ? ttsStore.currentVoice
++          : voices[0];
++      if (!voice) throw new Error('У Supertonic немає доступного голосу.');
++      ttsStore.setCurrentVoice(voice);
++      ttsStore.setSupertonicLanguage('uk');
++    };
++
+     const start = async () => {
+       if (!liveVoice || !modelStore.activeModelId) {
+         Alert.alert(
+@@ -150,6 +179,14 @@ export const LiveVoicePanel = observer(
+         ));
+       if (granted !== PermissionsAndroid.RESULTS.GRANTED) return;
+       await activateJarvis();
++      try {
++        await prepareUkrainianVoice();
++      } catch (error) {
++        Alert.alert(
++          'Jarvis Live · голос',
++          error instanceof Error ? error.message : String(error),
++        );
++        return;
++      }
+       const id = ++session.current;
+       const offline = await liveVoice.isOnDeviceAvailable();
+       if (session.current !== id) return;
+@@ -170,7 +207,7 @@ export const LiveVoicePanel = observer(
+             mode="text"
+             testID="jarvis-agent-button"
+             onPress={activateJarvis}>
+-            Агент Jarvis · 7 інструментів
++            Агент Jarvis · 9 інструментів
+           </Button>
+           <Button
+             mode={phase === 'idle' ? 'contained' : 'outlined'}
+@@ -184,7 +221,7 @@ export const LiveVoicePanel = observer(
+           {phase === 'speaking' && (
+             <Button
+               onPress={() => {
+-                liveVoice?.stopSpeaking().catch(() => {});
++                ttsStore.stop().catch(() => {});
+               }}>
+               Перервати
+             </Button>
+@@ -205,8 +242,8 @@ export const LiveVoicePanel = observer(
+         )}
+         {phase === 'idle' && (
+           <Text variant="bodySmall">
+-            Агент: пошук, читання сторінок, стан телефону, застосунки, ліхтарик,
+-            гучність, будильник і таймер.
++            Агент: веб, сторінки, телефон, файли, Python, застосунки, ліхтарик,
++            гучність, будильник і таймер. Голос Live: локальний Supertonic (uk).
+           </Text>
+         )}
+       </View>
