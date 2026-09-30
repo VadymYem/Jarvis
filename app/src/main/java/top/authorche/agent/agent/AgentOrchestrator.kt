@@ -88,6 +88,11 @@ class AgentOrchestrator(
                 confirmation = null,
             )
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            confirmationResponse?.cancel()
+            confirmationResponse = null
+            mutableState.value = mutableState.value.copy(
+                running = false, status = "Зупинено користувачем", confirmation = null,
+            )
             throw cancelled
         } catch (error: Throwable) {
             mutableState.value = mutableState.value.copy(

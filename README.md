@@ -157,6 +157,8 @@ The GitHub Actions workflow performs build and unit-test verification only. It d
 
 ## Scope
 
+The v0.3 snapshot adds a visible agent tool list, simple commands that work without a model, Wikipedia and GitHub search without keys, optional SearXNG/Brave search, and a foreground turn-based voice session. The workflow uploads a debug APK for device testing. See [docs/FUNCTIONS.md](docs/FUNCTIONS.md) for exact capabilities and current boundaries.
+
 This repository is intended to demonstrate engineering decisions and source quality. It is not presented as:
 
 - a production-ready personal assistant;

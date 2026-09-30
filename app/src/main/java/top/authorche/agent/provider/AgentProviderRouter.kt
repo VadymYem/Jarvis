@@ -17,7 +17,7 @@ class AgentProviderRouter(
         task: String,
         tools: List<ToolDefinition>,
         observations: List<String>,
-    ): AgentDecision = when (settings.load().provider) {
+    ): AgentDecision = BasicIntentRouter.decide(task, observations) ?: when (settings.load().provider) {
         ProviderKind.LOCAL_GGUF -> local.decide(task, tools, observations)
         ProviderKind.GEMINI -> gemini.decide(task, tools, observations)
         ProviderKind.OPENAI,

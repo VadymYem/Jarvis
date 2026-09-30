@@ -2,6 +2,7 @@ package top.authorche.agent
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -47,6 +48,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.AssistChip
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -70,17 +72,23 @@ import top.authorche.agent.shizuku.ShizukuBridge
 import top.authorche.agent.shizuku.ShizukuState
 import top.authorche.agent.ui.AuthorTheme
 import top.authorche.agent.provider.ProviderKind
+import top.authorche.agent.provider.SearchProvider
+import top.authorche.agent.provider.SearchSettings
+import top.authorche.agent.voice.VoiceSession
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
+    private lateinit var voice: VoiceSession
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        voice = VoiceSession(this, viewModel::run)
         enableEdgeToEdge()
         setContent {
             AuthorTheme {
                 AuthorAgentScreen(
                     viewModel = viewModel,
+                    voice = voice,
                     openAccessibility = {
                         startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                     },
@@ -88,12 +96,18 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onDestroy() {
+        voice.close()
+        super.onDestroy()
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AuthorAgentScreen(
     viewModel: MainViewModel,
+    voice: VoiceSession,
     openAccessibility: () -> Unit,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -101,6 +115,7 @@ private fun AuthorAgentScreen(
     var accessibilityReady by remember { mutableStateOf(AgentAccessibilityService.isConnected()) }
     var task by remember { mutableStateOf("") }
     var showSettings by remember { mutableStateOf(false) }
+    var showSearchSettings by remember { mutableStateOf(false) }
     val modelImportStatus by viewModel.modelImportStatus.collectAsStateWithLifecycle()
 
     val notificationPermission = rememberLauncherForActivityResult(
@@ -109,6 +124,11 @@ private fun AuthorAgentScreen(
     val modelPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri -> uri?.let(viewModel::importLocalModel) }
+    val microphonePermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> if (granted) voice.start() }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    LaunchedEffect(state) { voice.onAgentState(state) }
     LaunchedEffect(Unit) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -143,12 +163,26 @@ private fun AuthorAgentScreen(
                 )
             }
             item {
+                AgentCapabilities(viewModel.capabilities.map { it.name to it.description }) { task = it }
+            }
+            item {
+                VoiceCard(
+                    voice = voice,
+                    onStart = {
+                        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
+                            voice.start()
+                        else microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+                    },
+                )
+            }
+            item {
                 TaskComposer(
                     task = task,
                     onTaskChange = { task = it },
                     running = state.running,
                     onRun = { viewModel.run(task) },
                     onSettings = { showSettings = true },
+                    onSearch = { showSearchSettings = true },
                 )
             }
             item {
@@ -158,6 +192,7 @@ private fun AuthorAgentScreen(
                     answer = state.finalAnswer,
                     error = state.error,
                     onReset = viewModel::reset,
+                    onStop = viewModel::stop,
                 )
             }
             if (state.trace.isNotEmpty()) {
@@ -194,6 +229,94 @@ private fun AuthorAgentScreen(
             },
         )
     }
+    if (showSearchSettings) {
+        SearchSettingsDialog(
+            initial = viewModel.searchSettings(),
+            onDismiss = { showSearchSettings = false },
+            onSave = { provider, url, key ->
+                viewModel.saveSearch(provider, url, key)
+                showSearchSettings = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun AgentCapabilities(tools: List<Pair<String, String>>, onExample: (String) -> Unit) {
+    Card(shape = RoundedCornerShape(22.dp)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Дії агента · ${tools.size} інструментів", fontWeight = FontWeight.SemiBold)
+            tools.forEach { (name, description) ->
+                Text("• $description ($name)", style = MaterialTheme.typography.bodySmall)
+            }
+            Text("Спробуйте команду", fontWeight = FontWeight.Medium)
+            listOf("Знайди на телефоні Telegram", "Знайди у Вікіпедії історію Києва",
+                "Відкрий календар", "Нагадай мені про зустріч через 30 хвилин")
+                .forEach { example -> AssistChip(onClick = { onExample(example) }, label = { Text(example) }) }
+        }
+    }
+}
+
+@Composable
+private fun VoiceCard(voice: VoiceSession, onStart: () -> Unit) {
+    Card(shape = RoundedCornerShape(22.dp)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Text("Жива голосова розмова", fontWeight = FontWeight.SemiBold)
+            Text(if (voice.onDevice) "Системне локальне розпізнавання доступне"
+                else "Системне розпізнавання; офлайн залежить від установленого рушія",
+                style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("uk-UA", "en-US", "de-DE").forEach { locale ->
+                    FilterChip(selected = voice.language == locale,
+                        onClick = { voice.setLanguage(locale) }, label = { Text(locale.substring(0, 2).uppercase()) })
+                }
+            }
+            Text(voice.status, color = MaterialTheme.colorScheme.primary)
+            if (voice.transcript.isNotBlank()) Text("Ви: ${voice.transcript}")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (voice.active) {
+                    Button(onClick = voice::listenAgain) { Text("Слухати / перервати") }
+                    OutlinedButton(onClick = voice::stop) { Text("Завершити") }
+                } else Button(onClick = onStart) { Text("Почати розмову") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchSettingsDialog(
+    initial: SearchSettings,
+    onDismiss: () -> Unit,
+    onSave: (SearchProvider, String, String) -> Unit,
+) {
+    var provider by remember { mutableStateOf(initial.provider) }
+    var url by remember { mutableStateOf(initial.searxngUrl) }
+    var key by remember { mutableStateOf(initial.braveKey) }
+    var error by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Джерело пошуку") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                SearchProvider.entries.forEach { choice ->
+                    FilterChip(selected = choice == provider, onClick = { provider = choice },
+                        label = { Text(choice.title) })
+                }
+                Text("Вікіпедія шукає статті, GitHub — репозиторії. Для загального вебпошуку підключіть SearXNG або Brave API.",
+                    style = MaterialTheme.typography.bodySmall)
+                if (provider == SearchProvider.SEARXNG) OutlinedTextField(
+                    value = url, onValueChange = { url = it }, label = { Text("HTTPS URL SearXNG") })
+                if (provider == SearchProvider.BRAVE) OutlinedTextField(
+                    value = key, onValueChange = { key = it }, label = { Text("Brave Search API ключ") },
+                    visualTransformation = PasswordVisualTransformation())
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = { Button(onClick = {
+            runCatching { onSave(provider, url, key) }.onFailure { error = it.message }
+        }) { Text("Зберегти") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Скасувати") } },
+    )
 }
 
 @Composable
@@ -211,7 +334,7 @@ private fun BrandHeader() {
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    text = "A",
+                    text = "J✦",
                     color = MaterialTheme.colorScheme.onPrimary,
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold,
@@ -219,7 +342,7 @@ private fun BrandHeader() {
             }
             Column(modifier = Modifier.padding(start = 13.dp)) {
                 Text(
-                    text = "AuthorAI Agent",
+                    text = "Jarvis | AuthorAI",
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
                 )
@@ -313,6 +436,7 @@ private fun TaskComposer(
     running: Boolean,
     onRun: () -> Unit,
     onSettings: () -> Unit,
+    onSearch: () -> Unit,
 ) {
     Card(shape = RoundedCornerShape(22.dp)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -339,6 +463,7 @@ private fun TaskComposer(
                     Text("Модель")
                 }
             }
+            OutlinedButton(onClick = onSearch, enabled = !running) { Text("Пошуковики") }
         }
     }
 }
@@ -350,6 +475,7 @@ private fun StatusCard(
     answer: String?,
     error: String?,
     onReset: () -> Unit,
+    onStop: () -> Unit,
 ) {
     AnimatedVisibility(running || answer != null || error != null) {
         Surface(
@@ -370,6 +496,10 @@ private fun StatusCard(
                 if (!running) {
                     TextButton(onClick = onReset, modifier = Modifier.align(Alignment.End)) {
                         Text("Нове завдання")
+                    }
+                } else {
+                    TextButton(onClick = onStop, modifier = Modifier.align(Alignment.End)) {
+                        Text("Зупинити агента")
                     }
                 }
             }

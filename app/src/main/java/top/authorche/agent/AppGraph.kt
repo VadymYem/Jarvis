@@ -15,7 +15,8 @@ class AppGraph(context: Context) {
     private val secrets = SecretStore(appContext)
     val settings = AgentSettingsStore(appContext, secrets)
     val localModels = LocalModelStore(appContext, settings)
-    private val tools = ToolRegistry(AndroidTools.create(appContext))
+    private val tools = ToolRegistry(AndroidTools.create(appContext, settings))
+    val capabilities = tools.definitions
     private val provider = AgentProviderRouter(appContext, settings)
     private val policy = PolicyEngine()
 

@@ -8,19 +8,30 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 import top.authorche.agent.agent.AgentUiState
 import top.authorche.agent.provider.ProviderSettings
 import top.authorche.agent.provider.ProviderKind
+import top.authorche.agent.provider.SearchProvider
+import top.authorche.agent.provider.SearchSettings
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val graph = (application as AuthorAgentApplication).graph
     val state: StateFlow<AgentUiState> = graph.orchestrator.state
+    val capabilities = graph.capabilities
+    fun searchSettings(): SearchSettings = graph.settings.search()
+    fun saveSearch(provider: SearchProvider, url: String, key: String) =
+        graph.settings.saveSearch(provider, url, key)
     private val mutableModelImportStatus = MutableStateFlow<String?>(null)
     val modelImportStatus: StateFlow<String?> = mutableModelImportStatus.asStateFlow()
+    private var activeTask: Job? = null
 
     fun run(task: String) {
-        viewModelScope.launch { graph.orchestrator.run(task) }
+        if (activeTask?.isActive == true) return
+        activeTask = viewModelScope.launch { graph.orchestrator.run(task) }
     }
+
+    fun stop() { activeTask?.cancel(); graph.orchestrator.respondToConfirmation(false) }
 
     fun confirm(approved: Boolean) = graph.orchestrator.respondToConfirmation(approved)
 

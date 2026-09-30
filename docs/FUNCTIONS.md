@@ -63,6 +63,20 @@ This document describes only functionality implemented in the portfolio snapshot
 - Schedule background reminder work with WorkManager.
 - Deliver reminders through an Android notification channel.
 
+## Search and voice (v0.3)
+
+- Offline search across installed launchable applications. This does not search arbitrary device files.
+- Wikipedia article search and GitHub repository search without an API key.
+- Optional general web search through a user configured HTTPS SearXNG instance or Brave Search API key.
+- A foreground voice screen with partial speech transcription, turn taking, Android TextToSpeech, manual interruption, and Ukrainian/English/German language selection.
+- Prefer Android's on-device recognition service where available. System recognition and TTS availability and language packs vary by device; this version does not bundle Whisper/FUTO or neural voice models.
+- A small deterministic offline router for app search, web search, app launch, and relative reminders. Other tasks require a configured GGUF or cloud model.
+- Explicit stop control for an executing agent task.
+
+## Current boundaries
+
+There is no full-duplex audio, acoustic echo cancellation, background listening, voice cloning, mail integration, notification replies, Termux integration, file search, or general offline web index in this version. Search results are external untrusted data. A SearXNG server must enable JSON output. Users must verify actions on a real device, including recognition language availability and Accessibility permissions.
+
 ## UI and engineering
 
 - Native Jetpack Compose UI.

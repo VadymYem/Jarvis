@@ -11,6 +11,15 @@ data class ProviderSettings(
     val localModelPath: String,
 )
 
+enum class SearchProvider(val title: String) {
+    WIKIPEDIA("Вікіпедія · без ключа"),
+    GITHUB("GitHub · без ключа"),
+    SEARXNG("SearXNG · власний сервер"),
+    BRAVE("Brave Search API"),
+}
+
+data class SearchSettings(val provider: SearchProvider, val searxngUrl: String, val braveKey: String)
+
 enum class ProviderKind(
     val title: String,
     val defaultEndpoint: String,
@@ -29,6 +38,25 @@ class AgentSettingsStore(
     private val secrets: SecretStore,
 ) {
     private val preferences = context.getSharedPreferences("author_agent_settings", Context.MODE_PRIVATE)
+
+    fun search(): SearchSettings = SearchSettings(
+        provider = runCatching { SearchProvider.valueOf(
+            preferences.getString("search_provider", SearchProvider.WIKIPEDIA.name).orEmpty(),
+        ) }.getOrDefault(SearchProvider.WIKIPEDIA),
+        searxngUrl = preferences.getString("searxng_url", "").orEmpty(),
+        braveKey = secrets.get("brave_search_key"),
+    )
+
+    fun saveSearch(provider: SearchProvider, searxngUrl: String, braveKey: String) {
+        val url = searxngUrl.trim().trimEnd('/')
+        if (provider == SearchProvider.SEARXNG) {
+            require(url.startsWith("https://")) { "SearXNG потребує HTTPS-адресу" }
+        }
+        if (provider == SearchProvider.BRAVE) require(braveKey.isNotBlank()) { "Вкажіть Brave API-ключ" }
+        preferences.edit().putString("search_provider", provider.name)
+            .putString("searxng_url", url).apply()
+        secrets.put("brave_search_key", braveKey.trim())
+    }
 
     fun load(): ProviderSettings = ProviderSettings(
         provider = currentProvider(),
