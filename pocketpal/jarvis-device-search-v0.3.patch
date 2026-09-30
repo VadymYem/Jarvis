@@ -22,7 +22,7 @@ diff --git a/src/services/search/providers/deviceWeb.ts b/src/services/search/pr
 new file mode 100644
 --- /dev/null
 +++ b/src/services/search/providers/deviceWeb.ts
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,86 @@
 +import type {SearchProvider, SearchHit, SearchOptions} from '../types';
 +import {fetchText} from './http';
 +
@@ -119,7 +119,7 @@ diff --git a/src/services/search/providers/__tests__/keyless.test.ts b/src/servi
  
  const json = (body: unknown) => ({
    ok: true,
-@@ -55,4 +56,28 @@ describe('keyless search adapters', () => {
+@@ -55,4 +56,25 @@ describe('keyless search adapters', () => {
        'https://search.example.org/search?q=hello&format=json',
      );
    });
@@ -183,7 +183,7 @@ diff --git a/src/store/SearchProviderStore.ts b/src/store/SearchProviderStore.ts
  const DEFAULT_RESULT_COUNT = 5;
  const MIN_RESULT_COUNT = 1;
  const MAX_RESULT_COUNT = 8;
-@@ -105,7 +106,9 @@ class SearchProviderStore {
+@@ -105,6 +106,7 @@ class SearchProviderStore {
    get isProviderConfigured(): boolean {
      return (
        this.activeProviderId === 'wikipedia' ||
@@ -206,7 +206,7 @@ diff --git a/src/store/__tests__/SearchProviderStore.test.ts b/src/store/__tests
        expect(store.resultCount).toBe(5);
        expect(store.hasConsentedToSearch).toBe(false);
      });
-@@ -146,7 +146,7 @@ describe('SearchProviderStore', () => {
+@@ -146,5 +146,5 @@ describe('SearchProviderStore', () => {
        const store = await newStore();
        store.activeProviderId = 'parallel'; // gated; only reachable via stale storage
        store.normalizeHydratedPrefs();
@@ -231,7 +231,7 @@ diff --git a/src/store/__tests__/SearchProviderStore.test.ts b/src/store/__tests
 diff --git a/src/screens/SettingsScreen/SettingsScreen.tsx b/src/screens/SettingsScreen/SettingsScreen.tsx
 --- a/src/screens/SettingsScreen/SettingsScreen.tsx
 +++ b/src/screens/SettingsScreen/SettingsScreen.tsx
-@@ -1271,6 +1271,13 @@ export const SettingsScreen: React.FC = observer(() => {
+@@ -1271,6 +1271,14 @@ export const SettingsScreen: React.FC = observer(() => {
                      надсилаються Вікімедіа.
                    </Text>
                  )}
@@ -246,7 +246,7 @@ diff --git a/src/screens/SettingsScreen/SettingsScreen.tsx b/src/screens/Setting
                  {activeSearchProviderId === 'searxng' && (
                    <Text variant="labelSmall" style={styles.textDescription}>
                      Вкажіть HTTPS-адресу SearXNG з увімкненим JSON API. Сервер
-@@ -1278,7 +1285,10 @@ export const SettingsScreen: React.FC = observer(() => {
+@@ -1278,7 +1285,8 @@ export const SettingsScreen: React.FC = observer(() => {
                      результати локально.
                    </Text>
                  )}
