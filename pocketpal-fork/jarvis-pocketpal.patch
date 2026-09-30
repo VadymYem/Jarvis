@@ -4998,3 +4998,121 @@ index 0000000..7c9e412
 +    return nativeModule.recognize(languageTag);
 +  },
 +};
+
+diff --git a/react-native.config.js b/react-native.config.js
+index 1d89488..1abf5f0 100644
+--- a/react-native.config.js
++++ b/react-native.config.js
+@@ -1,7 +1,17 @@
+ module.exports = {
+   project: {
+     ios: {},
+     android: {},
+   },
++  // JARVIS: Firebase/AppCheck is intentionally disabled on Android.
++  // The Jarvis build does not ship google-services.json and does not use
++  // Firebase for its core local-agent runtime. Keeping these native packages
++  // autolinked would register startup ContentProviders before MainApplication.
++  dependencies: {
++    '@react-native-firebase/app': {platforms: {android: null}},
++    '@react-native-firebase/app-check': {platforms: {android: null}},
++  },
+   assets: ['./src/assets/fonts'],
+ };
+diff --git a/src/utils/fb.ts b/src/utils/fb.ts
+index a41d2cb..0a551c1 100644
+--- a/src/utils/fb.ts
++++ b/src/utils/fb.ts
+@@ -1,62 +1,23 @@
+-import {getApp} from '@react-native-firebase/app';
+-import {
+-  ReactNativeFirebaseAppCheckProvider,
+-  initializeAppCheck as fbInitializeAppCheck,
+-} from '@react-native-firebase/app-check';
+-
+-import {APPCHECK_DEBUG_TOKEN_ANDROID, APPCHECK_DEBUG_TOKEN_IOS} from '@env';
+-
+-// Track initialization status
+-let isAppCheckInitialized = false;
+-let appCheckInstance: any;
+-
+-export const initializeAppCheck = async () => {
+-  if (isAppCheckInitialized) {
+-    return;
+-  }
+-
+-  try {
+-    // Ensure Firebase app is initialized first
+-    const app = getApp();
+-    if (!app) {
+-      throw new Error('Firebase app is not initialized');
+-    }
+-
+-    // Skip App Check initialization if debug tokens are not configured in dev mode
+-    if (
+-      __DEV__ &&
+-      (!APPCHECK_DEBUG_TOKEN_ANDROID || !APPCHECK_DEBUG_TOKEN_IOS)
+-    ) {
+-      console.warn(
+-        'Firebase App Check debug tokens not configured - skipping initialization in dev mode',
+-      );
+-      return;
+-    }
+-
+-    // const rnfbProvider = appCheck().newReactNativeFirebaseAppCheckProvider();
+-    const rnfbProvider = new ReactNativeFirebaseAppCheckProvider();
+-
+-    rnfbProvider.configure({
+-      android: {
+-        provider: __DEV__ ? 'debug' : 'playIntegrity',
+-        debugToken: APPCHECK_DEBUG_TOKEN_ANDROID,
+-      },
+-      apple: {
+-        provider: __DEV__ ? 'debug' : 'appAttestWithDeviceCheckFallback',
+-        debugToken: APPCHECK_DEBUG_TOKEN_IOS,
+-      },
+-    });
+-    appCheckInstance = await fbInitializeAppCheck(getApp(), {
+-      provider: rnfbProvider,
+-      isTokenAutoRefreshEnabled: true,
+-    });
+-
+-    isAppCheckInitialized = true;
+-  } catch (error) {
+-    console.error('Failed to initialize Firebase App Check:', error);
+-    throw error;
+-  }
+-};
+-
+-// Get a fresh App Check token
+-export const getAppCheckToken = async () => {
+-  try {
+-    const {token} = await appCheckInstance.getToken();
+-    return token;
+-  } catch (error) {
+-    console.error('Failed to get App Check token:', error);
+-    throw error;
+-  }
+-};
++/**
++ * Jarvis Android is intentionally Firebase-free.
++ *
++ * Upstream uses Firebase App Check only for optional benchmark/feedback
++ * submission. Importing RNFirebase through the shared utils barrel made those
++ * native modules part of the Android startup graph even though Jarvis removes
++ * google-services/Firebase Gradle configuration. Keep the API surface so
++ * upstream callers still type-check, but fail only when an optional remote
++ * submission is explicitly requested instead of during application startup.
++ */
++const disabledError = () =>
++  new Error(
++    'Firebase App Check is disabled in Jarvis | AuthorAi. Local benchmarks and the core agent remain available.',
++  );
++
++export const initializeAppCheck = async (): Promise<void> => {
++  throw disabledError();
++};
++
++export const getAppCheckToken = async (): Promise<string> => {
++  throw disabledError();
++};
