@@ -41,6 +41,11 @@ This document describes only functionality implemented in the portfolio snapshot
 - Enter text through Accessibility.
 - Scroll supported nodes.
 - Trigger Back and Home system actions.
+- Read/write/clear clipboard content through a typed tool.
+- Open constrained system intents and selected device controls.
+- Open the mail client and prepare a visible draft without silently sending it.
+- Read/dismiss supported notifications and send a notification quick-reply only after risk-policy confirmation.
+- Run allowlisted Termux/ADB operations through `RUN_COMMAND`; arbitrary model-generated shell text is rejected.
 
 ## Shizuku / privileged operations
 
@@ -77,7 +82,7 @@ This document describes only functionality implemented in the portfolio snapshot
 
 ## Current boundaries
 
-There is no full-duplex audio, acoustic echo cancellation, background listening, voice cloning, mail integration, notification replies, Termux integration, global filesystem search, or general offline web index in this version. Search results are external untrusted data. A SearXNG server must enable JSON output. Users must verify actions on a real device, including recognition language availability and Accessibility permissions.
+There is no true full-duplex Live audio, acoustic echo cancellation/barge-in pipeline, background wake-word listening, production voice cloning, global filesystem search, or bundled general offline web index in this version. Search results are external untrusted data. A SearXNG server must enable JSON output. Users must verify actions on a real device, including recognition language availability and Accessibility permissions.
 
 ## UI and engineering
 

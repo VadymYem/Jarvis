@@ -22,16 +22,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Set up Gradle 8.13
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v5
         with:
           gradle-version: "8.13"
           cache-read-only: ${{ github.event_name == 'pull_request' }}
@@ -43,5 +43,5 @@ jobs:
       - name: Restore stable test signing key
         run: base64 --decode signing/jarvis-debug.jks.b64 > signing/jarvis-debug.jks
 
-      - name: Verify portfolio snapshot
+      - name: Verify native agent
         run: gradle --no-daemon --stacktrace :app:assembleDebug :app:testDebugUnitTest

@@ -1,6 +1,6 @@
-# Jarvis | AuthorAI — Kotlin prototype
+# Jarvis | AuthorAI — unified Android agent repository
 
-> **Full Android test APK:** [PocketPal-based v0.1.0 prerelease](https://github.com/AuthorGramProject/aaa/releases/tag/v0.1.0-pocketpal), built from [`pocketpal-fork`](https://github.com/AuthorGramProject/aaa/tree/pocketpal-fork). This `main` branch is a smaller standalone Kotlin/Compose prototype. Its APK has different features and a different signing certificate; do not use its CI builds as the full PocketPal release.
+> **Single canonical branch:** `main`. It contains the native Kotlin/Compose agent implementation plus the PocketPal-based release layer under `pocketpal/`. The full Android test APK is reconstructed and built from `main` by `.github/workflows/jarvis-pocketpal-build.yml`.
 
 **Android AI agent architecture showcase by AuthorChe.**
 
@@ -164,7 +164,7 @@ base64 --decode signing/jarvis-debug.jks.b64 > signing/jarvis-debug.jks
 
 The private repository contains a stable **debug testing key** so later CI APKs can update one another. Anyone with access to the repository can copy this key. Never use it to sign a production or Play Store release. APKs created with earlier runner-generated debug keys require a one-time uninstall before this build can be installed.
 
-The GitHub Actions workflow verifies the prototype build and unit tests. The PocketPal release is built by the workflow on `pocketpal-fork`.
+GitHub Actions on `main` verifies the native agent build/unit tests and reconstructs the PocketPal release from the pinned upstream revision plus the repository patch.
 
 ## Scope
 

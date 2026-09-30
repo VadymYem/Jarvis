@@ -12,11 +12,35 @@
 - License: MIT
 - Use: Maven dependencies `dev.rikka.shizuku:api` and `dev.rikka.shizuku:provider` plus the documented UserService integration.
 
+## Termux RUN_COMMAND API
+
+- Repository: https://github.com/termux/termux-app
+- License: GPL-3.0
+- Use: documented inter-app `RUN_COMMAND` Intent contract only. Termux source or binaries are not embedded in Jarvis | AuthorAi.
+
 ## Mobile-Agent
 
 - Repository: https://github.com/X-PLUG/MobileAgent
 - License: MIT
 - Use: research reference for the mobile GUI-agent observe/act/reflect workflow. Its Python ADB implementation is not embedded.
+
+## MobileRun
+
+- Repository: https://github.com/mobilerun-ai/mobilerun
+- License: MIT
+- Use: research reference for combining accessibility trees, gestures and screenshot-aware mobile task execution. No MobileRun source is embedded.
+
+## PokeClaw
+
+- Repository: https://github.com/shubham0204/PokeClaw
+- License: Apache-2.0
+- Use: research reference for on-device Android agents, notification access and explicit background execution. No PokeClaw source or model is embedded.
+
+## sherpa-onnx
+
+- Repository: https://github.com/k2-fsa/sherpa-onnx
+- License: Apache-2.0
+- Use: evaluated as the future local Ukrainian STT/TTS, VAD and wake-word runtime. It is not bundled in version 0.4.0.
 
 ## llama.cpp
 

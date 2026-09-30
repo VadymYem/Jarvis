@@ -14,6 +14,12 @@ object AndroidTools {
         FindPhoneTool(context),
         UiAutomationTool(),
         ReminderTool(context),
+        SystemIntentTool(context),
+        DeviceControlTool(context),
+        ClipboardTool(context),
+        NotificationTool(),
+        EmailAppTool(context),
+        TermuxTool(context),
         ShizukuTool(),
     )
 }

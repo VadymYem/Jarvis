@@ -24,12 +24,24 @@ class AuthorAgentApplication : Application() {
                 "Нагадування агента",
                 NotificationManager.IMPORTANCE_HIGH,
             ).apply {
-                description = "Нагадування, які створив AuthorAI Agent"
+                description = "Нагадування, які створив Jarvis | AuthorAi"
+            },
+        )
+        manager.createNotificationChannel(
+            NotificationChannel(
+                PHONE_FINDER_CHANNEL,
+                "Пошук телефона",
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = "Гучний сигнал Jarvis | AuthorAi для пошуку телефона"
+                setSound(null, null)
+                enableVibration(false)
             },
         )
     }
 
     companion object {
         const val REMINDERS_CHANNEL = "agent_reminders"
+        const val PHONE_FINDER_CHANNEL = "jarvis_phone_finder"
     }
 }
