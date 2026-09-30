@@ -82,6 +82,10 @@ jobs:
         working-directory: jarvis-src
         run: yarn install --frozen-lockfile --network-timeout 30000
 
+      - name: Format reconstructed Jarvis sources
+        working-directory: jarvis-src
+        run: yarn eslint . --fix
+
       - name: Validate localizations
         working-directory: jarvis-src
         run: yarn l10n:validate
