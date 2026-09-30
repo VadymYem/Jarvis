@@ -569,7 +569,7 @@ diff --git a/src/services/talents/index.ts b/src/services/talents/index.ts
  export type {SearchAccess} from './searchAccess';
  // Deliberately narrow: the raw allowlist writers stay module-internal so all
  // writes happen inside services/talents (seed at run start, WebSearchEngine
-@@ -68,6 +72,8 @@ export function registerDefaultTalents(): void {
+@@ -68,5 +72,7 @@ export function registerDefaultTalents(): void {
    talentRegistry.register(new ReadUrlEngine(searchAccess));
    talentRegistry.register(new DeviceStatusEngine());
    talentRegistry.register(new DeviceActionEngine());
@@ -625,7 +625,7 @@ diff --git a/src/services/talents/__tests__/pact-cleanup.test.ts b/src/services/
  
      const names = schemas.map(s => s.function.name).sort();
      expect(names).toEqual([
-@@ -150,9 +150,11 @@ describe('PACT cleanup: deriveToolSchemas()', () => {
+@@ -150,7 +150,9 @@ describe('PACT cleanup: deriveToolSchemas()', () => {
        'datetime',
        'device_action',
        'device_status',
