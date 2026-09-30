@@ -20,8 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      RNLLAMA_SKIP_POSTINSTALL: '1'
-      ORG_GRADLE_PROJECT_rnllamaBuildFromSource: 'true'
+      ORG_GRADLE_PROJECT_rnllamaBuildFromSource: 'false'
       ORG_GRADLE_PROJECT_reactNativeArchitectures: arm64-v8a
 
     steps:
@@ -54,7 +53,7 @@ jobs:
       - name: Enable Yarn
         run: corepack enable
 
-      - name: Install dependencies
+      - name: Install dependencies and prebuilt llama libraries
         working-directory: jarvis-src
         run: yarn install --frozen-lockfile --network-timeout 30000
 
@@ -77,6 +76,13 @@ jobs:
       - name: Build signed arm64 APK
         working-directory: jarvis-src/android
         run: ./gradlew assembleProdRelease -PreactNativeArchitectures=arm64-v8a --build-cache
+
+      - name: Verify Android payload
+        working-directory: jarvis-src
+        run: |
+          node scripts/verify-android-payload.js \
+            --apk android/app/build/outputs/apk/prod/release/app-prod-release.apk \
+            --report payload-report.txt
 
       - name: Verify release certificate
         run: |
