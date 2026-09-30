@@ -1,0 +1,988 @@
+diff --git a/android/app/build.gradle b/android/app/build.gradle
+index 405df65..ef9543c 100644
+--- a/android/app/build.gradle
++++ b/android/app/build.gradle
+@@ -85,8 +85,8 @@ android {
+         applicationId "top.authorche.agent"
+         minSdkVersion rootProject.ext.minSdkVersion
+         targetSdkVersion rootProject.ext.targetSdkVersion
+-        versionCode 1
+-        versionName "0.1.0"
++        versionCode 2
++        versionName "0.2.0"
+         ndk {
+             abiFilters "arm64-v8a"
+         }
+diff --git a/android/app/src/main/AndroidManifest.xml b/android/app/src/main/AndroidManifest.xml
+index 6926fb1..ac0499a 100644
+--- a/android/app/src/main/AndroidManifest.xml
++++ b/android/app/src/main/AndroidManifest.xml
+@@ -13,6 +13,9 @@
+         <intent>
+             <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+         </intent>
++        <intent>
++            <action android:name="android.speech.RecognitionService" />
++        </intent>
+     </queries>
+ 
+     <!-- Permissions -->
+diff --git a/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt b/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
+index 97997cc..fd70d33 100644
+--- a/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
++++ b/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
+@@ -7,7 +7,7 @@ import com.facebook.react.uimanager.ViewManager
+ 
+ class AgentDevicePackage : ReactPackage {
+   override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> =
+-    listOf(AgentDeviceModule(reactContext), ExternalSpeechModule(reactContext))
++    listOf(AgentDeviceModule(reactContext), ExternalSpeechModule(reactContext), LiveVoiceModule(reactContext))
+ 
+   override fun createViewManagers(
+     reactContext: ReactApplicationContext
+diff --git a/android/app/src/main/java/top/authorche/agent/LiveVoiceModule.kt b/android/app/src/main/java/top/authorche/agent/LiveVoiceModule.kt
+new file mode 100644
+index 0000000..c6d7e81
+--- /dev/null
++++ b/android/app/src/main/java/top/authorche/agent/LiveVoiceModule.kt
+@@ -0,0 +1,179 @@
++package top.authorche.agent
++
++import android.Manifest
++import android.content.Intent
++import android.content.pm.PackageManager
++import android.os.Build
++import android.os.Bundle
++import android.speech.RecognitionListener
++import android.speech.RecognizerIntent
++import android.speech.SpeechRecognizer
++import android.speech.tts.TextToSpeech
++import android.speech.tts.UtteranceProgressListener
++import com.facebook.react.bridge.Promise
++import com.facebook.react.bridge.ReactApplicationContext
++import com.facebook.react.bridge.ReactContextBaseJavaModule
++import com.facebook.react.bridge.ReactMethod
++import java.util.Locale
++
++/** Foreground, turn-based voice conversation. No background microphone service. */
++class LiveVoiceModule(private val context: ReactApplicationContext) : ReactContextBaseJavaModule(context) {
++  private var recognizer: SpeechRecognizer? = null
++  private var recognitionPromise: Promise? = null
++  private var tts: TextToSpeech? = null
++  private var speechPromise: Promise? = null
++  private var speechReady = false
++  private var speechSequence = 0
++
++  override fun getName() = "LiveVoiceModule"
++
++  @ReactMethod fun isOnDeviceAvailable(promise: Promise) {
++    promise.resolve(Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(context))
++  }
++
++  @ReactMethod fun listen(languageTag: String, onDeviceOnly: Boolean, promise: Promise) {
++    context.runOnUiQueueThread {
++      if (recognitionPromise != null) {
++        promise.reject("VOICE_BUSY", "Already listening")
++        return@runOnUiQueueThread
++      }
++      if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
++        promise.reject("MIC_PERMISSION", "Microphone permission required")
++        return@runOnUiQueueThread
++      }
++      if (onDeviceOnly && (Build.VERSION.SDK_INT < 31 || !SpeechRecognizer.isOnDeviceRecognitionAvailable(context))) {
++        promise.reject("NO_LOCAL_RECOGNIZER", "No on-device recognition service is installed")
++        return@runOnUiQueueThread
++      }
++      if (!onDeviceOnly && !SpeechRecognizer.isRecognitionAvailable(context)) {
++        promise.reject("NO_RECOGNIZER", "No speech recognition service is installed")
++        return@runOnUiQueueThread
++      }
++      try {
++        recognizer = if (onDeviceOnly) SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
++                     else SpeechRecognizer.createSpeechRecognizer(context)
++        recognitionPromise = promise
++        recognizer?.setRecognitionListener(object : RecognitionListener {
++          override fun onReadyForSpeech(params: Bundle?) = Unit
++          override fun onBeginningOfSpeech() = Unit
++          override fun onRmsChanged(rmsdB: Float) = Unit
++          override fun onBufferReceived(buffer: ByteArray?) = Unit
++          override fun onEndOfSpeech() = Unit
++          override fun onPartialResults(partialResults: Bundle?) = Unit
++          override fun onEvent(eventType: Int, params: Bundle?) = Unit
++          override fun onError(error: Int) {
++            val pending = recognitionPromise
++            recognitionPromise = null
++            recognizer?.destroy()
++            recognizer = null
++            if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) pending?.resolve(null)
++            else pending?.reject("RECOGNITION_$error", "Speech recognition error $error")
++          }
++          override fun onResults(results: Bundle?) {
++            val pending = recognitionPromise
++            recognitionPromise = null
++            recognizer?.destroy()
++            recognizer = null
++            pending?.resolve(results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull())
++          }
++        })
++        recognizer?.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
++          putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
++          putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag)
++          putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, onDeviceOnly)
++        })
++      } catch (error: Exception) {
++        recognitionPromise = null
++        recognizer?.destroy()
++        recognizer = null
++        promise.reject("VOICE_START", error.message, error)
++      }
++    }
++  }
++
++  @ReactMethod fun stopListening(promise: Promise) {
++    context.runOnUiQueueThread {
++      recognitionPromise?.resolve(null)
++      recognitionPromise = null
++      recognizer?.cancel()
++      recognizer?.destroy()
++      recognizer = null
++      promise.resolve(null)
++    }
++  }
++
++  @ReactMethod fun speak(text: String, languageTag: String, promise: Promise) {
++    context.runOnUiQueueThread {
++      speechSequence += 1
++      speechPromise?.resolve(null)
++      speechPromise = promise
++      tts?.stop()
++      if (tts == null) {
++        tts = TextToSpeech(context) { status ->
++          context.runOnUiQueueThread {
++            speechReady = status == TextToSpeech.SUCCESS
++            if (speechReady && speechPromise != null) startSpeech(text, languageTag)
++            else {
++              speechPromise?.reject("TTS_UNAVAILABLE", "Text to speech engine unavailable")
++              speechPromise = null
++            }
++          }
++        }
++      } else startSpeech(text, languageTag)
++    }
++  }
++
++  private fun startSpeech(text: String, languageTag: String) {
++    if (!speechReady || speechPromise == null) return
++    val engine = tts ?: return
++    val sequence = speechSequence
++    val utteranceId = "jarvis-live-${speechSequence}"
++    if (engine.setLanguage(Locale.forLanguageTag(languageTag)) < 0) {
++      speechPromise?.reject("TTS_LANGUAGE", "No voice installed for $languageTag")
++      speechPromise = null
++      return
++    }
++    engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
++      override fun onStart(utteranceId: String?) = Unit
++      override fun onDone(completedId: String?) {
++        if (completedId == utteranceId) context.runOnUiQueueThread {
++          if (sequence != speechSequence) return@runOnUiQueueThread
++          speechPromise?.resolve(null)
++          speechPromise = null
++        }
++      }
++      @Deprecated("Deprecated in Android")
++      override fun onError(completedId: String?) {
++        if (completedId == utteranceId) context.runOnUiQueueThread {
++          if (sequence != speechSequence) return@runOnUiQueueThread
++          speechPromise?.reject("TTS_ERROR", "Speech playback failed")
++          speechPromise = null
++        }
++      }
++    })
++    if (engine.speak(text.take(3000), TextToSpeech.QUEUE_FLUSH, null, utteranceId) == TextToSpeech.ERROR) {
++      speechPromise?.reject("TTS_START", "Speech playback could not start")
++      speechPromise = null
++    }
++  }
++
++  @ReactMethod fun stopSpeaking(promise: Promise) {
++    speechSequence += 1
++    tts?.stop()
++    speechPromise?.resolve(null)
++    speechPromise = null
++    promise.resolve(null)
++  }
++
++  override fun invalidate() {
++    recognizer?.cancel()
++    recognizer?.destroy()
++    recognitionPromise?.resolve(null)
++    tts?.stop()
++    tts?.shutdown()
++    speechPromise?.resolve(null)
++    recognitionPromise = null
++    speechPromise = null
++    super.invalidate()
++  }
++}
+diff --git a/src/components/SearchProviderKeySheet/SearchProviderKeySheet.tsx b/src/components/SearchProviderKeySheet/SearchProviderKeySheet.tsx
+index fd22927..06ac699 100644
+--- a/src/components/SearchProviderKeySheet/SearchProviderKeySheet.tsx
++++ b/src/components/SearchProviderKeySheet/SearchProviderKeySheet.tsx
+@@ -83,39 +83,57 @@ export const SearchProviderKeySheet: React.FC<SearchProviderKeySheetProps> =
+         <Sheet
+           isVisible={isVisible}
+           onClose={onDismiss}
+-          title={t(strings.keyLabel, {provider: providerLabel})}
++          title={
++            providerId === 'searxng'
++              ? 'Адреса сервера SearXNG'
++              : t(strings.keyLabel, {provider: providerLabel})
++          }
+           snapPoints={['50%']}>
+           <Sheet.ScrollView contentContainerStyle={styles.container}>
+-            <Text style={styles.description}>{strings.description}</Text>
++            <Text style={styles.description}>
++              {providerId === 'searxng'
++                ? 'Введіть HTTPS-адресу свого сервера з доступним JSON API. Публічні сервери можуть вимикати JSON або обмежувати запити.'
++                : strings.description}
++            </Text>
+             <TextInput
+               testID="search-provider-key-input"
+-              label={t(strings.keyLabel, {provider: providerLabel})}
++              label={
++                providerId === 'searxng'
++                  ? 'HTTPS-адреса SearXNG'
++                  : t(strings.keyLabel, {provider: providerLabel})
++              }
+               value={key}
+               onChangeText={setKey}
+-              placeholder={t(strings.keyInputPlaceholder, {
+-                provider: providerLabel,
+-              })}
++              placeholder={
++                providerId === 'searxng'
++                  ? 'https://search.example.org'
++                  : t(strings.keyInputPlaceholder, {
++                      provider: providerLabel,
++                    })
++              }
+               autoCapitalize="none"
+               autoCorrect={false}
+               spellCheck={false}
+-              secureTextEntry={secureTextEntry}
++              secureTextEntry={providerId !== 'searxng' && secureTextEntry}
+               right={
+-                <PaperTextInput.Icon
+-                  testID="search-provider-key-input-icon"
+-                  accessibilityLabel={
+-                    secureTextEntry
+-                      ? strings.showKeyAccessibilityLabel
+-                      : strings.hideKeyAccessibilityLabel
+-                  }
+-                  icon={({color}) =>
+-                    secureTextEntry ? (
+-                      <EyeIcon width={24} height={24} stroke={color} />
+-                    ) : (
+-                      <EyeOffIcon width={24} height={24} stroke={color} />
+-                    )
+-                  }
+-                  onPress={toggleSecureEntry}
+-                />
++                providerId === 'searxng' ? undefined : (
++                  <PaperTextInput.Icon
++                    testID="search-provider-key-input-icon"
++                    accessibilityLabel={
++                      secureTextEntry
++                        ? strings.showKeyAccessibilityLabel
++                        : strings.hideKeyAccessibilityLabel
++                    }
++                    icon={({color}) =>
++                      secureTextEntry ? (
++                        <EyeIcon width={24} height={24} stroke={color} />
++                      ) : (
++                        <EyeOffIcon width={24} height={24} stroke={color} />
++                      )
++                    }
++                    onPress={toggleSecureEntry}
++                  />
++                )
+               }
+             />
+           </Sheet.ScrollView>
+diff --git a/src/screens/ChatScreen/ChatScreen.tsx b/src/screens/ChatScreen/ChatScreen.tsx
+index ceb6705..0d4211e 100644
+--- a/src/screens/ChatScreen/ChatScreen.tsx
++++ b/src/screens/ChatScreen/ChatScreen.tsx
+@@ -31,6 +31,7 @@ import {ErrorState} from '../../utils/errors';
+ import {user, assistant} from '../../utils/chat';
+ 
+ import {VideoPalScreen} from './VideoPalScreen';
++import {LiveVoicePanel} from '../../voice/LiveVoicePanel';
+ 
+ const renderBubble = ({
+   child,
+@@ -257,6 +258,7 @@ export const ChatScreen: React.FC = observer(() => {
+   return (
+     <>
+       <ChatView
++        customContent={<LiveVoicePanel send={handleSendPress} />}
+         renderBubble={renderBubble}
+         messages={chatSessionStore.currentSessionMessages}
+         activePal={activePal}
+diff --git a/src/screens/SettingsScreen/SettingsScreen.tsx b/src/screens/SettingsScreen/SettingsScreen.tsx
+index 93f54f7..0c19e2e 100644
+--- a/src/screens/SettingsScreen/SettingsScreen.tsx
++++ b/src/screens/SettingsScreen/SettingsScreen.tsx
+@@ -1262,43 +1262,70 @@ export const SettingsScreen: React.FC = observer(() => {
+                   </View>
+                 </View>
+ 
+-                {/* Per-provider BYOK key entry */}
+-                <Divider style={styles.divider} />
+-                <View style={styles.switchContainer}>
+-                  <View style={styles.textContainer}>
+-                    <Text variant="titleMedium" style={styles.textLabel}>
+-                      {l10n.settings.internetSearch.keyLabel}
+-                    </Text>
+-                    <Text variant="labelSmall" style={styles.textDescription}>
+-                      {searchProviderStore.hasKey(activeSearchProviderId)
+-                        ? t(l10n.settings.internetSearch.keyIsSet, {
+-                            provider:
+-                              activeSearchProvider?.label ??
+-                              activeSearchProviderId,
+-                          })
+-                        : t(l10n.settings.internetSearch.keyNotSet, {
+-                            provider:
+-                              activeSearchProvider?.label ??
+-                              activeSearchProviderId,
+-                          })}
+-                    </Text>
+-                    {!searchHasConsent && (
+-                      <Text variant="labelSmall" style={styles.textDescription}>
+-                        {l10n.settings.internetSearch.consentRequired}
+-                      </Text>
+-                    )}
+-                  </View>
+-                  <Button
+-                    testID="search-provider-key-button"
+-                    mode="outlined"
+-                    disabled={!searchHasConsent}
+-                    onPress={() => setShowSearchKeySheet(true)}
+-                    style={styles.menuButton}>
+-                    {searchProviderStore.hasKey(activeSearchProviderId)
+-                      ? l10n.settings.internetSearch.updateKeyButton
+-                      : l10n.settings.internetSearch.setKeyButton}
+-                  </Button>
+-                </View>
++                {/* Keyless encyclopedia; SearXNG stores its HTTPS instance address. */}
++                {activeSearchProviderId === 'wikipedia' && (
++                  <Text variant="labelSmall" style={styles.textDescription}>
++                    Без ключа. Пошук у Вікіпедії, не в усьому інтернеті. Запити
++                    надсилаються Вікімедіа.
++                  </Text>
++                )}
++                {activeSearchProviderId === 'searxng' && (
++                  <Text variant="labelSmall" style={styles.textDescription}>
++                    Вкажіть HTTPS-адресу SearXNG з увімкненим JSON API. Сервер
++                    здійснює пошук у зовнішніх індексах; телефон обробляє
++                    результати локально.
++                  </Text>
++                )}
++                {activeSearchProviderId !== 'wikipedia' && (
++                  <>
++                    <Divider style={styles.divider} />
++                    <View style={styles.switchContainer}>
++                      <View style={styles.textContainer}>
++                        <Text variant="titleMedium" style={styles.textLabel}>
++                          {l10n.settings.internetSearch.keyLabel}
++                        </Text>
++                        <Text
++                          variant="labelSmall"
++                          style={styles.textDescription}>
++                          {activeSearchProviderId === 'searxng'
++                            ? searchProviderStore.hasKey(activeSearchProviderId)
++                              ? 'Адресу сервера збережено'
++                              : 'Вкажіть адресу SearXNG'
++                            : searchProviderStore.hasKey(activeSearchProviderId)
++                              ? t(l10n.settings.internetSearch.keyIsSet, {
++                                  provider:
++                                    activeSearchProvider?.label ??
++                                    activeSearchProviderId,
++                                })
++                              : t(l10n.settings.internetSearch.keyNotSet, {
++                                  provider:
++                                    activeSearchProvider?.label ??
++                                    activeSearchProviderId,
++                                })}
++                        </Text>
++                        {!searchHasConsent && (
++                          <Text
++                            variant="labelSmall"
++                            style={styles.textDescription}>
++                            {l10n.settings.internetSearch.consentRequired}
++                          </Text>
++                        )}
++                      </View>
++                      <Button
++                        testID="search-provider-key-button"
++                        mode="outlined"
++                        disabled={!searchHasConsent}
++                        onPress={() => setShowSearchKeySheet(true)}
++                        style={styles.menuButton}>
++                        {activeSearchProviderId === 'searxng'
++                          ? 'Адреса сервера'
++                          : searchProviderStore.hasKey(activeSearchProviderId)
++                            ? l10n.settings.internetSearch.updateKeyButton
++                            : l10n.settings.internetSearch.setKeyButton}
++                      </Button>
++                    </View>
++                  </>
++                )}
+ 
+                 {/* Result-count control */}
+                 <Divider style={styles.divider} />
+diff --git a/src/services/search/__tests__/index.test.ts b/src/services/search/__tests__/index.test.ts
+index f78a3ae..f28bae6 100644
+--- a/src/services/search/__tests__/index.test.ts
++++ b/src/services/search/__tests__/index.test.ts
+@@ -3,7 +3,14 @@ import type {SearchProviderId} from '../types';
+ 
+ describe('createSearchProvider', () => {
+   it('builds the adapter matching each provider id', () => {
+-    const ids: SearchProviderId[] = ['tavily', 'brave', 'exa', 'parallel'];
++    const ids: SearchProviderId[] = [
++      'tavily',
++      'brave',
++      'exa',
++      'parallel',
++      'wikipedia',
++      'searxng',
++    ];
+     for (const id of ids) {
+       expect(createSearchProvider(id, () => 'k').id).toBe(id);
+     }
+diff --git a/src/services/search/index.ts b/src/services/search/index.ts
+index 69b96a0..a713af4 100644
+--- a/src/services/search/index.ts
++++ b/src/services/search/index.ts
+@@ -4,6 +4,8 @@ import {TavilyProvider} from './providers/tavily';
+ import {BraveProvider} from './providers/brave';
+ import {ExaProvider} from './providers/exa';
+ import {ParallelProvider} from './providers/parallel';
++import {WikipediaProvider} from './providers/wikipedia';
++import {SearxngProvider} from './providers/searxng';
+ 
+ export type {
+   SearchProvider,
+@@ -35,6 +37,10 @@ export const createSearchProvider = (
+       return new ExaProvider(getKey);
+     case 'parallel':
+       return new ParallelProvider(getKey);
++    case 'wikipedia':
++      return new WikipediaProvider();
++    case 'searxng':
++      return new SearxngProvider(getKey);
+   }
+ };
+ 
+diff --git a/src/services/search/providers/__tests__/keyless.test.ts b/src/services/search/providers/__tests__/keyless.test.ts
+new file mode 100644
+index 0000000..87741e4
+--- /dev/null
++++ b/src/services/search/providers/__tests__/keyless.test.ts
+@@ -0,0 +1,58 @@
++import {WikipediaProvider} from '../wikipedia';
++import {SearxngProvider} from '../searxng';
++
++const json = (body: unknown) => ({
++  ok: true,
++  status: 200,
++  headers: {get: () => null},
++  text: async () => JSON.stringify(body),
++});
++
++describe('keyless search adapters', () => {
++  it('queries Wikipedia without credentials and normalizes links', async () => {
++    global.fetch = jest.fn().mockResolvedValue(
++      json({
++        query: {
++          search: [{title: 'Місяць', snippet: '<span>Супутник</span>'}],
++        },
++      }),
++    );
++    const hits = await new WikipediaProvider().search('місяць', {
++      maxResults: 3,
++    });
++    expect(hits[0]).toEqual({
++      title: 'Місяць',
++      url: 'https://uk.wikipedia.org/wiki/%D0%9C%D1%96%D1%81%D1%8F%D1%86%D1%8C',
++      snippet: 'Супутник',
++    });
++    expect((global.fetch as jest.Mock).mock.calls[0][0]).toContain(
++      'srsearch=%D0%BC',
++    );
++  });
++
++  it('requires HTTPS and a JSON-capable SearXNG instance', async () => {
++    global.fetch = jest.fn().mockResolvedValue(
++      json({
++        results: [
++          {title: 'Answer', url: 'https://example.org', content: 'Summary'},
++        ],
++      }),
++    );
++    await expect(
++      new SearxngProvider(() => 'http://example.org').search('q', {
++        maxResults: 3,
++      }),
++    ).rejects.toThrow(/HTTPS/);
++    const hits = await new SearxngProvider(
++      () => 'https://search.example.org/',
++    ).search('hello', {maxResults: 2});
++    expect(hits[0]).toEqual({
++      title: 'Answer',
++      url: 'https://example.org',
++      snippet: 'Summary',
++    });
++    expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe(
++      'https://search.example.org/search?q=hello&format=json',
++    );
++  });
++});
+diff --git a/src/services/search/providers/searxng.ts b/src/services/search/providers/searxng.ts
+new file mode 100644
+index 0000000..ec31025
+--- /dev/null
++++ b/src/services/search/providers/searxng.ts
+@@ -0,0 +1,46 @@
++import type {SearchProvider, SearchHit, SearchOptions} from '../types';
++import {fetchJson, requireKey} from './http';
++
++type SearxResponse = {
++  results?: {title?: string; url?: string; content?: string}[];
++};
++
++/** The configured value is an HTTPS instance URL, not an API key. */
++export class SearxngProvider implements SearchProvider {
++  readonly id = 'searxng';
++
++  constructor(private readonly getInstanceUrl: () => string) {}
++
++  async search(query: string, opts: SearchOptions): Promise<SearchHit[]> {
++    const raw = requireKey(this.getInstanceUrl(), 'SearXNG instance URL');
++    const url = new URL(raw);
++    if (
++      url.protocol !== 'https:' ||
++      url.username ||
++      url.password ||
++      url.search ||
++      url.hash
++    ) {
++      throw new Error(
++        'Enter an HTTPS SearXNG base URL without credentials or query parameters.',
++      );
++    }
++    const endpoint = `${url.origin}${url.pathname.replace(/\/$/, '')}/search?q=${encodeURIComponent(query)}&format=json`;
++    const response = await fetchJson<SearxResponse>(endpoint, {method: 'GET'});
++    if (!Array.isArray(response.results)) {
++      throw new Error(
++        'This SearXNG instance does not expose JSON search. Enable JSON format or choose another instance.',
++      );
++    }
++    return response.results
++      .slice(0, Math.min(8, Math.max(1, opts.maxResults)))
++      .filter(
++        item => typeof item.url === 'string' && /^https?:\/\//.test(item.url),
++      )
++      .map(item => ({
++        title: item.title || item.url!,
++        url: item.url!,
++        snippet: item.content || '',
++      }));
++  }
++}
+diff --git a/src/services/search/providers/wikipedia.ts b/src/services/search/providers/wikipedia.ts
+new file mode 100644
+index 0000000..327e313
+--- /dev/null
++++ b/src/services/search/providers/wikipedia.ts
+@@ -0,0 +1,31 @@
++import type {SearchProvider, SearchHit, SearchOptions} from '../types';
++import {fetchJson} from './http';
++
++type WikiResponse = {
++  query?: {search?: {title: string; snippet: string}[]};
++};
++
++const stripMarkup = (html: string): string =>
++  html
++    .replace(/<[^>]*>/g, '')
++    .replace(/&quot;/g, '"')
++    .replace(/&amp;/g, '&');
++
++/** Keyless public encyclopedia search. It is not a general web index. */
++export class WikipediaProvider implements SearchProvider {
++  readonly id = 'wikipedia';
++
++  async search(query: string, opts: SearchOptions): Promise<SearchHit[]> {
++    const language = /[А-Яа-яІіЇїЄєҐґ]/.test(query) ? 'uk' : 'en';
++    const params = `action=query&list=search&format=json&utf8=1&srlimit=${Math.min(8, Math.max(1, opts.maxResults))}&srsearch=${encodeURIComponent(query)}`;
++    const response = await fetchJson<WikiResponse>(
++      `https://${language}.wikipedia.org/w/api.php?${params}`,
++      {method: 'GET'},
++    );
++    return (response.query?.search ?? []).map(item => ({
++      title: item.title,
++      url: `https://${language}.wikipedia.org/wiki/${encodeURIComponent(item.title.replace(/ /g, '_'))}`,
++      snippet: stripMarkup(item.snippet),
++    }));
++  }
++}
+diff --git a/src/services/search/types.ts b/src/services/search/types.ts
+index 4e827fc..29d932a 100644
+--- a/src/services/search/types.ts
++++ b/src/services/search/types.ts
+@@ -1,6 +1,12 @@
+ /** Provider-agnostic search types — no provider-specific field crosses this boundary. */
+ 
+-export type SearchProviderId = 'tavily' | 'brave' | 'exa' | 'parallel';
++export type SearchProviderId =
++  | 'tavily'
++  | 'brave'
++  | 'exa'
++  | 'parallel'
++  | 'wikipedia'
++  | 'searxng';
+ 
+ export interface SearchHit {
+   title: string;
+diff --git a/src/services/talents/WebSearchEngine.ts b/src/services/talents/WebSearchEngine.ts
+index 2589a5f..ac0c977 100644
+--- a/src/services/talents/WebSearchEngine.ts
++++ b/src/services/talents/WebSearchEngine.ts
+@@ -56,7 +56,7 @@ export class WebSearchEngine implements TalentEngine {
+       return {
+         type: 'error',
+         summary: `web_search: ${provider.id} not enabled`,
+-        errorMessage: `Internet search is not enabled. Accept the disclosure and set an API key for ${provider.id} in Settings → Internet Search.`,
++        errorMessage: `Internet search is not enabled. Accept the disclosure and configure ${provider.id} in Settings → Internet Search. Wikipedia needs no key; SearXNG needs an HTTPS instance URL.`,
+       };
+     }
+ 
+diff --git a/src/store/SearchProviderStore.ts b/src/store/SearchProviderStore.ts
+index f3ad011..77abcee 100644
+--- a/src/store/SearchProviderStore.ts
++++ b/src/store/SearchProviderStore.ts
+@@ -23,9 +23,11 @@ export const SEARCH_PROVIDERS: SearchProviderMeta[] = [
+   {id: 'brave', label: 'Brave', selectable: true},
+   {id: 'exa', label: 'Exa', selectable: true},
+   {id: 'parallel', label: 'Parallel', selectable: false},
++  {id: 'wikipedia', label: 'Wikipedia · без ключа', selectable: true},
++  {id: 'searxng', label: 'SearXNG · власний сервер', selectable: true},
+ ];
+ 
+-const DEFAULT_PROVIDER: SearchProviderId = 'brave';
++const DEFAULT_PROVIDER: SearchProviderId = 'wikipedia';
+ const DEFAULT_RESULT_COUNT = 5;
+ const MIN_RESULT_COUNT = 1;
+ const MAX_RESULT_COUNT = 8;
+@@ -103,7 +105,10 @@ class SearchProviderStore {
+   }
+ 
+   get isProviderConfigured(): boolean {
+-    return this.hasKey(this.activeProviderId);
++    return (
++      this.activeProviderId === 'wikipedia' ||
++      this.hasKey(this.activeProviderId)
++    );
+   }
+ 
+   get canSearch(): boolean {
+diff --git a/src/store/__tests__/SearchProviderStore.test.ts b/src/store/__tests__/SearchProviderStore.test.ts
+index c8fb630..c0324e4 100644
+--- a/src/store/__tests__/SearchProviderStore.test.ts
++++ b/src/store/__tests__/SearchProviderStore.test.ts
+@@ -27,9 +27,9 @@ describe('SearchProviderStore', () => {
+   };
+ 
+   describe('initial state', () => {
+-    it('defaults to brave, result count 5, no consent', async () => {
++    it('defaults to keyless Wikipedia, result count 5, no consent', async () => {
+       const store = await newStore();
+-      expect(store.activeProviderId).toBe('brave');
++      expect(store.activeProviderId).toBe('wikipedia');
+       expect(store.resultCount).toBe(5);
+       expect(store.hasConsentedToSearch).toBe(false);
+     });
+@@ -146,7 +146,7 @@ describe('SearchProviderStore', () => {
+       const store = await newStore();
+       store.activeProviderId = 'parallel'; // gated; only reachable via stale storage
+       store.normalizeHydratedPrefs();
+-      expect(store.activeProviderId).toBe('brave');
++      expect(store.activeProviderId).toBe('wikipedia');
+     });
+ 
+     it('clamps a persisted out-of-range result count', async () => {
+@@ -192,6 +192,7 @@ describe('SearchProviderStore', () => {
+   describe('isProviderConfigured', () => {
+     it('is false with no key and true once the active provider has a key', async () => {
+       const store = await newStore();
++      store.setActiveProvider('brave');
+       expect(store.isProviderConfigured).toBe(false);
+       await store.setKey('brave', 'k'); // the active provider
+       expect(store.isProviderConfigured).toBe(true);
+@@ -201,6 +202,7 @@ describe('SearchProviderStore', () => {
+   describe('canSearch (consent + key, load-bearing at execution)', () => {
+     it('requires both consent and a key', async () => {
+       const store = await newStore();
++      store.setActiveProvider('brave');
+       expect(store.canSearch).toBe(false);
+ 
+       await store.setKey('brave', 'k'); // the active provider
+@@ -214,6 +216,15 @@ describe('SearchProviderStore', () => {
+     });
+   });
+ 
++  it('allows keyless Wikipedia only after explicit consent', async () => {
++    const store = await newStore();
++    expect(store.canSearch).toBe(false);
++    store.setConsent(true);
++    expect(store.canSearch).toBe(true);
++    store.setActiveProvider('searxng');
++    expect(store.canSearch).toBe(false);
++  });
++
+   describe('cache invalidation on auth-boundary changes', () => {
+     it('resets the search cache on key/consent/provider changes', async () => {
+       const reset = jest.spyOn(budget, 'resetSearchCache');
+diff --git a/src/voice/LiveVoicePanel.tsx b/src/voice/LiveVoicePanel.tsx
+new file mode 100644
+index 0000000..b884bc1
+--- /dev/null
++++ b/src/voice/LiveVoicePanel.tsx
+@@ -0,0 +1,204 @@
++import React from 'react';
++import {
++  Alert,
++  PermissionsAndroid,
++  Platform,
++  StyleSheet,
++  View,
++} from 'react-native';
++import {observer} from 'mobx-react';
++import {Button, Text} from 'react-native-paper';
++import {chatSessionStore, modelStore, palStore} from '../store';
++import {MessageType} from '../utils/types';
++import {liveVoice} from './liveVoice';
++
++type Phase = 'idle' | 'listening' | 'thinking' | 'speaking';
++
++const styles = StyleSheet.create({
++  panel: {paddingHorizontal: 16, paddingVertical: 6},
++  actions: {flexDirection: 'row', alignItems: 'center', gap: 8},
++});
++
++/** Explicit foreground voice session, with a separate stop/interrupt action. */
++export const LiveVoicePanel = observer(
++  ({send}: {send: (message: MessageType.PartialText) => void}) => {
++    const [phase, setPhase] = React.useState<Phase>('idle');
++    const [heard, setHeard] = React.useState('');
++    const [localOnly, setLocalOnly] = React.useState(true);
++    const session = React.useRef(0);
++    const baseline = React.useRef<string | undefined>(undefined);
++    const timeout = React.useRef<ReturnType<typeof setTimeout> | undefined>(
++      undefined,
++    );
++    const messages = chatSessionStore.currentSessionMessages;
++    const isInferencing = modelStore.inferencing;
++    const lastAnswer = [...messages]
++      .reverse()
++      .find(m => m.type === 'assistant_turn') as
++      | MessageType.AssistantTurn
++      | undefined;
++
++    const stop = React.useCallback(() => {
++      session.current += 1;
++      if (timeout.current) clearTimeout(timeout.current);
++      setPhase('idle');
++      liveVoice?.stopListening().catch(() => {});
++      liveVoice?.stopSpeaking().catch(() => {});
++    }, []);
++
++    React.useEffect(
++      () => () => {
++        session.current += 1;
++        if (timeout.current) clearTimeout(timeout.current);
++        liveVoice?.stopListening().catch(() => {});
++        liveVoice?.stopSpeaking().catch(() => {});
++      },
++      [],
++    );
++
++    const listen = React.useCallback(
++      async (id: number, offline: boolean) => {
++        if (!liveVoice || session.current !== id) return;
++        setPhase('listening');
++        try {
++          const utterance = await liveVoice.listen('uk-UA', offline);
++          if (session.current !== id) return;
++          if (!utterance?.trim()) {
++            setPhase('idle');
++            return;
++          }
++          setHeard(utterance.trim());
++          baseline.current = [...chatSessionStore.currentSessionMessages]
++            .reverse()
++            .find(m => m.type === 'assistant_turn')?.id;
++          setPhase('thinking');
++          send({type: 'text', text: utterance.trim()});
++          timeout.current = setTimeout(() => {
++            if (session.current === id) {
++              setPhase('idle');
++              Alert.alert(
++                'Jarvis Live',
++                'Відповідь не надійшла. Спробуйте ще раз.',
++              );
++            }
++          }, 120000);
++        } catch (error) {
++          if (session.current !== id) return;
++          setPhase('idle');
++          Alert.alert(
++            'Jarvis Live',
++            error instanceof Error ? error.message : String(error),
++          );
++        }
++      },
++      [send],
++    );
++
++    React.useEffect(() => {
++      if (
++        phase !== 'thinking' ||
++        isInferencing ||
++        !lastAnswer ||
++        lastAnswer.id === baseline.current
++      )
++        return;
++      const text = [...lastAnswer.steps]
++        .reverse()
++        .find(s => s.content?.trim())
++        ?.content?.trim();
++      if (!text || !liveVoice) return;
++      if (timeout.current) clearTimeout(timeout.current);
++      const id = session.current;
++      setPhase('speaking');
++      liveVoice
++        .speak(text, 'uk-UA')
++        .then(() => {
++          if (session.current === id) listen(id, localOnly);
++        })
++        .catch(error => {
++          if (session.current === id) {
++            setPhase('idle');
++            Alert.alert(
++              'Jarvis Live',
++              error instanceof Error ? error.message : String(error),
++            );
++          }
++        });
++    }, [phase, isInferencing, lastAnswer, listen, localOnly]);
++
++    const activateJarvis = async () => {
++      const jarvis = palStore.pals.find(
++        p => p.name === 'Jarvis' && p.source === 'local',
++      );
++      if (jarvis) await chatSessionStore.setActivePal(jarvis.id);
++      else Alert.alert('Jarvis', 'Агент ще ініціалізується. Спробуйте знову.');
++    };
++
++    const start = async () => {
++      if (!liveVoice || !modelStore.activeModelId) {
++        Alert.alert(
++          'Jarvis Live',
++          'Спочатку завантажте або підключіть модель.',
++        );
++        return;
++      }
++      const granted =
++        Platform.OS === 'android' &&
++        (await PermissionsAndroid.request(
++          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
++        ));
++      if (granted !== PermissionsAndroid.RESULTS.GRANTED) return;
++      await activateJarvis();
++      const id = ++session.current;
++      const offline = await liveVoice.isOnDeviceAvailable();
++      if (session.current !== id) return;
++      setLocalOnly(offline);
++      listen(id, offline);
++    };
++
++    if (Platform.OS !== 'android') return null;
++    return (
++      <View style={styles.panel}>
++        <View style={styles.actions}>
++          <Button
++            mode="text"
++            testID="jarvis-agent-button"
++            onPress={activateJarvis}>
++            Агент Jarvis · 7 інструментів
++          </Button>
++          <Button
++            mode={phase === 'idle' ? 'contained' : 'outlined'}
++            testID="jarvis-live-button"
++            onPress={phase === 'idle' ? start : stop}>
++            {phase === 'idle' ? '🎙 Jarvis Live' : 'Зупинити Live'}
++          </Button>
++          {phase === 'speaking' && (
++            <Button
++              onPress={() => {
++                liveVoice?.stopSpeaking().catch(() => {});
++              }}>
++              Перервати
++            </Button>
++          )}
++        </View>
++        {phase !== 'idle' && (
++          <Text variant="bodySmall">
++            {phase === 'listening'
++              ? 'Слухаю…'
++              : phase === 'thinking'
++                ? `Обробляю: ${heard}`
++                : 'Відповідаю голосом…'}
++            {' · '}
++            {localOnly ? 'локальне розпізнавання' : 'системний голосовий рушій'}
++          </Text>
++        )}
++        {phase === 'idle' && (
++          <Text variant="bodySmall">
++            Агент: пошук, читання сторінок, стан телефону, застосунки, ліхтарик,
++            гучність, будильник і таймер.
++          </Text>
++        )}
++      </View>
++    );
++  },
++);
+diff --git a/src/voice/liveVoice.ts b/src/voice/liveVoice.ts
+new file mode 100644
+index 0000000..af8f3b6
+--- /dev/null
++++ b/src/voice/liveVoice.ts
+@@ -0,0 +1,14 @@
++import {NativeModules, Platform} from 'react-native';
++
++interface LiveVoiceNative {
++  isOnDeviceAvailable(): Promise<boolean>;
++  listen(languageTag: string, onDeviceOnly: boolean): Promise<string | null>;
++  stopListening(): Promise<void>;
++  speak(text: string, languageTag: string): Promise<void>;
++  stopSpeaking(): Promise<void>;
++}
++
++const module = NativeModules.LiveVoiceModule as LiveVoiceNative | undefined;
++
++export const liveVoice: LiveVoiceNative | undefined =
++  Platform.OS === 'android' ? module : undefined;

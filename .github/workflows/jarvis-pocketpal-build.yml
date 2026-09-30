@@ -35,6 +35,8 @@ jobs:
           git checkout 4ebab32771df7d9e2554cd88a376bbda7d833da1
           git apply --check ../pocketpal-fork/jarvis-pocketpal.patch
           git apply ../pocketpal-fork/jarvis-pocketpal.patch
+          git apply --check ../pocketpal-fork/jarvis-live.patch
+          git apply ../pocketpal-fork/jarvis-live.patch
           git diff --check
 
       - name: Add Jarvis badge to launcher artwork
@@ -113,28 +115,28 @@ jobs:
           test -n "$aapt"
           "$apksigner" verify --verbose --print-certs "$apk" | tee "$RUNNER_TEMP/apk-signature.txt"
           grep -Fqi 'certificate SHA-256 digest: 3049195e638c8ac9b2c41be1981b895c09d6e482d4dc03fa6bb41a59f1b16efd' "$RUNNER_TEMP/apk-signature.txt"
-          "$aapt" dump badging "$apk" | grep -q "package: name='top.authorche.agent' versionCode='1' versionName='0.1.0'"
+          "$aapt" dump badging "$apk" | grep -q "package: name='top.authorche.agent' versionCode='2' versionName='0.2.0'"
           sha256sum "$apk"
           du -h "$apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: jarvis-authorai-0.1.0-pocketpal-arm64-apk
+          name: jarvis-authorai-0.2.0-pocketpal-arm64-apk
           retention-days: 30
           if-no-files-found: error
           path: jarvis-src/android/app/build/outputs/apk/prod/release/app-prod-release.apk
 
       - name: Publish private device-test prerelease
-        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[release pocketpal v0.1.0]')
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[release pocketpal v0.2.0]')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          asset="$RUNNER_TEMP/Jarvis-AuthorAI-0.1.0-pocketpal-arm64.apk"
+          asset="$RUNNER_TEMP/Jarvis-AuthorAI-0.2.0-pocketpal-arm64.apk"
           cp jarvis-src/android/app/build/outputs/apk/prod/release/app-prod-release.apk "$asset"
-          gh release create v0.1.0-pocketpal "$asset" \
+          gh release create v0.2.0-pocketpal "$asset" \
             --target "$GITHUB_SHA" \
-            --title "Jarvis | AuthorAi 0.1.0 — PocketPal test" \
+            --title "Jarvis | AuthorAi 0.2.0 — PocketPal test" \
             --notes-file pocketpal-fork/RELEASE_NOTES.md \
             --prerelease

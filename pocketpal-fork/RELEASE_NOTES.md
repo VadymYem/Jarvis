@@ -1,24 +1,15 @@
-# Jarvis | AuthorAi 0.1.0 — PocketPal test release
+# Jarvis | AuthorAI 0.2.0 — тестовий PocketPal APK
 
-This arm64 APK is built from the **pocketpal-fork** branch, pinned to PocketPal AI 1.18.0. It is the full React Native/PocketPal app, not the smaller Kotlin/Compose prototype on `main`. No GGUF model is bundled; download or import a model in the app.
+Це arm64 APK з гілки `pocketpal-fork`. Потрібно встановити або імпортувати GGUF-модель чи налаштувати сумісний віддалений сервер. Оновлюється поверх 0.1.0 з тим самим релізним підписом.
 
-## Available to test
+## Що перевірити
 
-- Local GGUF and OpenAI-compatible remote models, chats, Pals, model downloads, benchmarks and upstream TTS engines.
-- The PocketPal agent loop with calculator, date/time, HTML rendering, URL reading and web search. Brave, Tavily, Exa, Parallel and custom HTTP search require their respective configuration or keys.
-- Jarvis `device_status` and `device_action`: open app or system settings, toggle flashlight, set media volume, start the Android alarm/timer flow, and play `was-wollen-wir-trinken.mp3` from the device media library.
-- One-shot Android speech input from the microphone button. The selected Android speech provider may need network access; offline mode is only a preference.
-- Launcher artwork with a small mint spark badge. Android locale and the default Jarvis persona are configured for Ukrainian.
+- У чаті кнопка «Агент Jarvis · 7 інструментів» активує Pal з пошуком, читанням сторінок, станом телефона і діями Android. Для виклику інструментів модель має підтримувати tool calling.
+- «Jarvis Live» в чаті почергово слухає українську команду, надсилає її в чат агенту, озвучує відповідь і починає слухати наступну. Є кнопки зупинки та переривання відповіді. Якщо на пристрої є локальна служба розпізнавання, вона використовується першою; інакше Android може використати системну мережеву службу. Потрібен дозвіл мікрофона.
+- Налаштування → Internet Search: Wikipedia без ключа (лише енциклопедичний індекс, українська або англійська за запитом) і SearXNG з власною HTTPS-адресою та доступним JSON API. Пошук потребує погодження на мережеві запити. Залишено Brave, Tavily та Exa з ключами.
 
-## Current limits
+## Відомі межі
 
-- Continuous hands-free Live voice with interruptions is **not implemented**. Dictation and TTS are separate upstream flows.
-- The larger agent toolset from `feat/jarvis-voice-mode` is a separate Kotlin/Compose prototype and is **not included** in this PocketPal APK: Accessibility UI actions, Shizuku, Termux, mail and notification automation are pending a native bridge port.
-- There is no bundled, free offline web index. Local inference works offline with a downloaded model; web search needs a network provider.
-- Xiaomi 14T Pro performance and all hardware actions need device testing. CI checks code, tests, payload and signature, not real-device behavior.
+Це голосова розмова по черзі, не повнодуплексний Live на рівні GPT/Gemini; голосового зліпка немає. Застосунок не має власного повного інтернет-індексу на пристрої. SearXNG використовує індекси і ресурси сервера, який ви вкажете; публічні інстанси можуть обмежувати запити або вимикати JSON. Телефон виконує локальну модель та обробляє результати, але це не скасовує лімітів зовнішнього сервісу. Пошта, Termux, Accessibility та Shizuku із прототипу `main` у цьому APK не реалізовані.
 
-## Installing
-
-Package ID: `top.authorche.agent`. The previous 0.3.1 compact APK uses a different signing certificate. Android cannot install this APK as an update over that build: back up any data you need, uninstall the old app, then install this APK. Uninstalling erases the old app's local chats and files. Future PocketPal test builds should use this release certificate.
-
-This is a private **prerelease for device testing**, not a final feature-complete release.
+CI перевіряє код і пакет, але поведінку мікрофона, TTS та підтримку української мови потрібно протестувати на Xiaomi.
