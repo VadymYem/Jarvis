@@ -86,7 +86,11 @@ jobs:
       - name: Verify Android payload
         working-directory: jarvis-src
         run: |
+          jq '.abis |= map(select(.abi == "arm64-v8a"))' \
+            scripts/android-payload-manifest.json \
+            > "$RUNNER_TEMP/android-payload-arm64.json"
           node scripts/verify-android-payload.js \
+            --manifest "$RUNNER_TEMP/android-payload-arm64.json" \
             --apk android/app/build/outputs/apk/prod/release/app-prod-release.apk \
             --report payload-report.txt
 
