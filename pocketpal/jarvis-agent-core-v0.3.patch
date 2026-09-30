@@ -63,7 +63,7 @@ diff --git a/android/app/src/main/java/top/authorche/agent/JarvisTermuxModule.kt
 new file mode 100644
 --- /dev/null
 +++ b/android/app/src/main/java/top/authorche/agent/JarvisTermuxModule.kt
-@@ -0,0 +1,211 @@
+@@ -0,0 +1,205 @@
 +package top.authorche.agent
 +
 +import android.app.Activity
@@ -273,7 +273,7 @@ diff --git a/src/agent/talents/PythonExecEngine.ts b/src/agent/talents/PythonExe
 new file mode 100644
 --- /dev/null
 +++ b/src/agent/talents/PythonExecEngine.ts
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,114 @@
 +import {NativeModules, Platform} from 'react-native';
 +import type {
 +  TalentEngine,
@@ -392,7 +392,7 @@ diff --git a/src/agent/talents/WorkspaceEngine.ts b/src/agent/talents/WorkspaceE
 new file mode 100644
 --- /dev/null
 +++ b/src/agent/talents/WorkspaceEngine.ts
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,155 @@
 +import * as RNFS from '@dr.pogodin/react-native-fs';
 +import type {
 +  TalentEngine,
