@@ -1156,7 +1156,7 @@ index 0000000..065cdc9
 +      promise.reject("DICTATION_BUSY", "A dictation request is already active.")
 +      return
 +    }
-+    val activity = currentActivity
++    val activity = context.currentActivity
 +    if (activity == null) {
 +      promise.reject("NO_ACTIVITY", "Jarvis must be visible to start dictation.")
 +      return
