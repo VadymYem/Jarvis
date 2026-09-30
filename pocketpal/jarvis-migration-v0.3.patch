@@ -1,7 +1,7 @@
 diff --git a/src/store/PalStore.ts b/src/store/PalStore.ts
 --- a/src/store/PalStore.ts
 +++ b/src/store/PalStore.ts
-@@ -781,6 +781,26 @@ class PalStore {
+@@ -781,6 +781,27 @@ class PalStore {
          p => p.name === 'Jarvis' && p.source === 'local',
        );
        if (existing) {
