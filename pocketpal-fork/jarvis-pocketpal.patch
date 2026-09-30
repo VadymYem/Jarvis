@@ -5023,7 +5023,7 @@ diff --git a/src/utils/fb.ts b/src/utils/fb.ts
 index a41d2cb..0a551c1 100644
 --- a/src/utils/fb.ts
 +++ b/src/utils/fb.ts
-@@ -1,62 +1,23 @@
+@@ -1,70 +1,22 @@
 -import {getApp} from '@react-native-firebase/app';
 -import {
 -  ReactNativeFirebaseAppCheckProvider,
