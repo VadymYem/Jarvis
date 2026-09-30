@@ -3,6 +3,7 @@ package top.authorche.agent.tools
 import android.content.Context
 import android.content.pm.LauncherApps
 import android.os.Process
+import android.provider.DocumentsContract
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
@@ -18,11 +19,11 @@ import top.authorche.agent.agent.ToolResult
 import top.authorche.agent.provider.AgentSettingsStore
 import top.authorche.agent.provider.SearchProvider
 
-class DeviceSearchTool(context: Context) : AgentTool {
+class DeviceSearchTool(context: Context, private val settings: AgentSettingsStore) : AgentTool {
     private val app = context.applicationContext
     override val definition = ToolDefinition(
-        "search_device", "Знайти встановлені застосунки на цьому телефоні, локально і без інтернету",
-        "{\"query\":\"частина назви застосунку\"}",
+        "search_device", "Знайти застосунки та файли у вибраній користувачем теці на телефоні, офлайн",
+        "{\"query\":\"частина назви застосунку або файлу\"}",
     )
     override fun risk(arguments: JSONObject) = RiskLevel.LOW
     override fun summarize(arguments: JSONObject) = "Пошук на пристрої: ${arguments.optString("query")}" 
@@ -39,9 +40,39 @@ class DeviceSearchTool(context: Context) : AgentTool {
             val data = JSONArray()
             matches.forEach { data.put(JSONObject().put("name", it.label.toString())
                 .put("package", it.applicationInfo.packageName)) }
-            ToolResult(true, if (matches.isEmpty()) "Застосунків не знайдено" else "Знайдено ${matches.size} застосунків",
-                JSONObject().put("apps", data))
+            val files = runCatching { searchFiles(query) }.getOrDefault(JSONArray())
+            ToolResult(true, "Знайдено ${matches.size} застосунків і ${files.length()} файлів",
+                JSONObject().put("apps", data).put("files", files))
         }.getOrElse { ToolResult(false, it.message ?: "Помилка пошуку на пристрої") }
+    }
+
+    private fun searchFiles(query: String): JSONArray {
+        val tree = settings.searchFolder() ?: return JSONArray()
+        val resolver = app.contentResolver
+        val root = DocumentsContract.getTreeDocumentId(tree)
+        val queue = ArrayDeque<Pair<String, Int>>()
+        queue.add(root to 0)
+        val found = JSONArray()
+        var visited = 0
+        while (queue.isNotEmpty() && visited < 1200 && found.length() < 20) {
+            val (parent, depth) = queue.removeFirst()
+            val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parent)
+            resolver.query(children, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE),
+                null, null, null)?.use { cursor ->
+                while (cursor.moveToNext() && visited++ < 1200) {
+                    val id = cursor.getString(0) ?: continue
+                    val name = cursor.getString(1) ?: continue
+                    val mime = cursor.getString(2)
+                    if (name.contains(query, ignoreCase = true) && found.length() < 20) {
+                        val uri = DocumentsContract.buildDocumentUriUsingTree(tree, id)
+                        found.put(JSONObject().put("name", name).put("uri", uri.toString()))
+                    }
+                    if (mime == DocumentsContract.Document.MIME_TYPE_DIR && depth < 4) queue.add(id to depth + 1)
+                }
+            }
+        }
+        return found
     }
 }
 
@@ -50,7 +81,7 @@ class WebSearchTool(private val settings: AgentSettingsStore) : AgentTool {
         .readTimeout(20, TimeUnit.SECONDS).followRedirects(false).build()
     override val definition = ToolDefinition(
         "search_web", "Пошук у Вікіпедії, GitHub, власному SearXNG або Brave Search; джерело обирається у налаштуваннях",
-        "{\"query\":\"пошуковий запит\",\"language\":\"uk|en|de\"}",
+        "{\"query\":\"пошуковий запит\",\"language\":\"uk|en|de\",\"source\":\"selected|wikipedia|github\"}",
     )
     override fun risk(arguments: JSONObject) = RiskLevel.LOW
     override fun summarize(arguments: JSONObject) = "Пошук в інтернеті: ${arguments.optString("query")}" 
@@ -60,8 +91,13 @@ class WebSearchTool(private val settings: AgentSettingsStore) : AgentTool {
             require(query.length in 2..200) { "Запит має містити 2–200 символів" }
             val language = arguments.optString("language", "uk").takeIf { it in setOf("uk", "en", "de") } ?: "uk"
             val config = settings.search()
+            val provider = when (arguments.optString("source")) {
+                "wikipedia" -> SearchProvider.WIKIPEDIA
+                "github" -> SearchProvider.GITHUB
+                else -> config.provider
+            }
             val encoded = URLEncoder.encode(query, "UTF-8")
-            val results = when (config.provider) {
+            val results = when (provider) {
                 SearchProvider.WIKIPEDIA -> wikipedia(language, encoded)
                 SearchProvider.GITHUB -> github(encoded)
                 SearchProvider.SEARXNG -> {
@@ -74,7 +110,7 @@ class WebSearchTool(private val settings: AgentSettingsStore) : AgentTool {
                 }
             }
             ToolResult(true, if (results.length() == 0) "Нічого не знайдено" else "Знайдено ${results.length()} результатів",
-                JSONObject().put("provider", config.provider.name).put("results", results))
+                JSONObject().put("provider", provider.name).put("results", results))
         }.getOrElse { ToolResult(false, it.message ?: "Пошук не вдався") }
     }
 

@@ -36,7 +36,7 @@ class VoiceSession(private val context: Context, private val onCommand: (String)
         if (!ttsReady && active) status = "Синтез мовлення недоступний; слухайте наступну команду вручну"
     }
 
-    fun setLanguage(value: String) {
+    fun selectLanguage(value: String) {
         language = value
         if (active) { recognizer?.cancel(); listen() }
     }

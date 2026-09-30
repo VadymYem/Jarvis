@@ -116,7 +116,9 @@ private fun AuthorAgentScreen(
     var task by remember { mutableStateOf("") }
     var showSettings by remember { mutableStateOf(false) }
     var showSearchSettings by remember { mutableStateOf(false) }
+    var folderStatus by remember { mutableStateOf(viewModel.searchFolder()) }
     val modelImportStatus by viewModel.modelImportStatus.collectAsStateWithLifecycle()
+    val findPhoneStatus by viewModel.findPhoneStatus.collectAsStateWithLifecycle()
 
     val notificationPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -124,6 +126,12 @@ private fun AuthorAgentScreen(
     val modelPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri -> uri?.let(viewModel::importLocalModel) }
+    val folderPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri -> uri?.let { folderStatus = viewModel.saveSearchFolder(it) } }
+    val songPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri -> uri?.let(viewModel::importFindPhoneSong) }
     val microphonePermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted -> if (granted) voice.start() }
@@ -164,6 +172,16 @@ private fun AuthorAgentScreen(
             }
             item {
                 AgentCapabilities(viewModel.capabilities.map { it.name to it.description }) { task = it }
+            }
+            item {
+                OutlinedButton(onClick = { folderPicker.launch(null) }) { Text("Вибрати теку для локального пошуку") }
+                Text(folderStatus, style = MaterialTheme.typography.bodySmall)
+            }
+            item {
+                OutlinedButton(onClick = { songPicker.launch(arrayOf("audio/mpeg", "audio/*")) }) {
+                    Text("Звук пошуку телефону · вибрати MP3")
+                }
+                findPhoneStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             }
             item {
                 VoiceCard(
@@ -251,7 +269,8 @@ private fun AgentCapabilities(tools: List<Pair<String, String>>, onExample: (Str
             }
             Text("Спробуйте команду", fontWeight = FontWeight.Medium)
             listOf("Знайди на телефоні Telegram", "Знайди у Вікіпедії історію Києва",
-                "Відкрий календар", "Нагадай мені про зустріч через 30 хвилин")
+                "Відкрий календар", "Який заряд телефону?",
+                "Знайди мій телефон", "Нагадай мені про зустріч через 30 хвилин")
                 .forEach { example -> AssistChip(onClick = { onExample(example) }, label = { Text(example) }) }
         }
     }
@@ -268,7 +287,7 @@ private fun VoiceCard(voice: VoiceSession, onStart: () -> Unit) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("uk-UA", "en-US", "de-DE").forEach { locale ->
                     FilterChip(selected = voice.language == locale,
-                        onClick = { voice.setLanguage(locale) }, label = { Text(locale.substring(0, 2).uppercase()) })
+                        onClick = { voice.selectLanguage(locale) }, label = { Text(locale.substring(0, 2).uppercase()) })
                 }
             }
             Text(voice.status, color = MaterialTheme.colorScheme.primary)

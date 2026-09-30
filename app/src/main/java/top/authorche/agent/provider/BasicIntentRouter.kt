@@ -8,6 +8,19 @@ object BasicIntentRouter {
     fun decide(task: String, observations: List<String>): AgentDecision? {
         val input = task.trim()
         val command = when {
+            Regex("^(знайди (мій )?телефон|де (мій )?телефон|find my phone)", RegexOption.IGNORE_CASE)
+                .containsMatchIn(input) -> "find_phone" to JSONObject()
+            Regex("^(який заряд|скільки заряду|стан телефону|battery status|akkustand)", RegexOption.IGNORE_CASE)
+                .containsMatchIn(input) -> "device_status" to JSONObject()
+            Regex("^(відкрий|open|öffne) (налаштування|settings|einstellungen) (wi-?fi|bluetooth|блютуз|батареї|battery)", RegexOption.IGNORE_CASE)
+                .containsMatchIn(input) -> {
+                val page = when {
+                    input.contains("bluetooth", true) || input.contains("блютуз", true) -> "bluetooth"
+                    input.contains("батареї", true) || input.contains("battery", true) -> "battery"
+                    else -> "wifi"
+                }
+                "open_settings" to JSONObject().put("page", page)
+            }
             Regex("^(знайди|пошукай|find|suche) (на телефоні|на пристрої|on (my )?phone|auf dem handy)\\s+", RegexOption.IGNORE_CASE)
                 .containsMatchIn(input) -> {
                 val query = input.replace(Regex("^(знайди|пошукай|find|suche) (на телефоні|на пристрої|on (my )?phone|auf dem handy)\\s+", RegexOption.IGNORE_CASE), "")
@@ -16,12 +29,14 @@ object BasicIntentRouter {
             Regex("^(знайди|пошукай|search|suche) (у вікіпедії|в вікіпедії|wikipedia|in wikipedia)\\s+", RegexOption.IGNORE_CASE)
                 .containsMatchIn(input) -> {
                 val query = input.replace(Regex("^(знайди|пошукай|search|suche) (у вікіпедії|в вікіпедії|wikipedia|in wikipedia)\\s+", RegexOption.IGNORE_CASE), "")
-                "search_web" to JSONObject().put("query", query).put("language", "uk")
+                val lang = if (input.startsWith("suche", true)) "de" else if (input.startsWith("search", true)) "en" else "uk"
+                "search_web" to JSONObject().put("query", query).put("language", lang).put("source", "wikipedia")
             }
             Regex("^(знайди|пошукай|search|suche) (в інтернеті|в мережі|the web|im internet)\\s+", RegexOption.IGNORE_CASE)
                 .containsMatchIn(input) -> {
                 val query = input.replace(Regex("^(знайди|пошукай|search|suche) (в інтернеті|в мережі|the web|im internet)\\s+", RegexOption.IGNORE_CASE), "")
-                "search_web" to JSONObject().put("query", query).put("language", "uk")
+                val lang = if (input.startsWith("suche", true)) "de" else if (input.startsWith("search", true)) "en" else "uk"
+                "search_web" to JSONObject().put("query", query).put("language", lang)
             }
             Regex("^(відкрий|запусти|open|öffne)\\s+", RegexOption.IGNORE_CASE).containsMatchIn(input) -> {
                 val app = input.replace(Regex("^(відкрий|запусти|open|öffne)\\s+", RegexOption.IGNORE_CASE), "")
@@ -56,6 +71,7 @@ object BasicIntentRouter {
             ?: return observation.take(7000)
         val results = data.optJSONArray("results") ?: data.optJSONArray("apps")
             ?: return summary
+        val files = data.optJSONArray("files") ?: org.json.JSONArray()
         return buildString {
             appendLine(summary)
             for (index in 0 until minOf(results.length(), 8)) {
@@ -65,6 +81,10 @@ object BasicIntentRouter {
                 item.optString("snippet").takeIf { it.isNotBlank() }?.let { append(" — ${it.take(200)}") }
                 item.optString("url", item.optString("package"))
                     .takeIf { it.isNotBlank() }?.let { append("\n$it") }
+            }
+            for (index in 0 until minOf(files.length(), 8)) {
+                val item = files.optJSONObject(index) ?: continue
+                append("\nФайл: ${item.optString("name")}")
             }
         }.take(7000)
     }

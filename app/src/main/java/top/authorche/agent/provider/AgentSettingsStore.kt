@@ -1,6 +1,8 @@
 package top.authorche.agent.provider
 
 import android.content.Context
+import android.net.Uri
+import android.content.Intent
 import top.authorche.agent.security.SecretStore
 
 data class ProviderSettings(
@@ -37,7 +39,15 @@ class AgentSettingsStore(
     context: Context,
     private val secrets: SecretStore,
 ) {
+    private val app = context.applicationContext
     private val preferences = context.getSharedPreferences("author_agent_settings", Context.MODE_PRIVATE)
+
+    fun searchFolder(): Uri? = preferences.getString("device_search_folder", null)?.let(Uri::parse)
+
+    fun saveSearchFolder(uri: Uri) {
+        app.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        preferences.edit().putString("device_search_folder", uri.toString()).apply()
+    }
 
     fun search(): SearchSettings = SearchSettings(
         provider = runCatching { SearchProvider.valueOf(
