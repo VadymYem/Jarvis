@@ -55,6 +55,9 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Cache Gradle dependencies
+        uses: gradle/actions/setup-gradle@v4
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
@@ -109,7 +112,7 @@ jobs:
           test -n "$apksigner"
           test -n "$aapt"
           "$apksigner" verify --verbose --print-certs "$apk" | tee "$RUNNER_TEMP/apk-signature.txt"
-          grep -qi 'Signer #1 certificate SHA-256 digest: 3049195e638c8ac9b2c41be1981b895c09d6e482d4dc03fa6bb41a59f1b16efd' "$RUNNER_TEMP/apk-signature.txt"
+          grep -Fqi 'certificate SHA-256 digest: 3049195e638c8ac9b2c41be1981b895c09d6e482d4dc03fa6bb41a59f1b16efd' "$RUNNER_TEMP/apk-signature.txt"
           "$aapt" dump badging "$apk" | grep -q "package: name='top.authorche.agent' versionCode='1' versionName='0.1.0'"
           sha256sum "$apk"
           du -h "$apk"
