@@ -1,0 +1,1144 @@
+diff --git a/App.tsx b/App.tsx
+--- a/App.tsx
++++ b/App.tsx
+@@ -37,6 +37,7 @@
+ import {AutomationBridge, BenchmarkRunnerScreen} from './src/__automation__';
+ import {
+   ChatScreen,
++  AgentScreen,
+   ModelsScreen,
+   SettingsScreen,
+   BenchmarkScreen,
+@@ -133,6 +134,11 @@
+                             options={{
+                               headerShown: false,
+                             }}
++                          />
++                          <Drawer.Screen
++                            name={ROUTES.JARVIS}
++                            component={gestureHandlerRootHOC(AgentScreen)}
++                            options={{headerShown: false}}
+                           />
+                           <Drawer.Screen
+                             name={ROUTES.PALS}
+diff --git a/android/app/build.gradle b/android/app/build.gradle
+--- a/android/app/build.gradle
++++ b/android/app/build.gradle
+@@ -76,6 +76,7 @@
+ def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
+ 
+ android {
++    buildFeatures { aidl true }
+     ndkVersion rootProject.ext.ndkVersion
+     buildToolsVersion rootProject.ext.buildToolsVersion
+     compileSdk rootProject.ext.compileSdkVersion
+@@ -85,8 +86,8 @@
+         applicationId "top.authorche.agent"
+         minSdkVersion rootProject.ext.minSdkVersion
+         targetSdkVersion rootProject.ext.targetSdkVersion
+-        versionCode 3
+-        versionName "0.3.0"
++        versionCode 4
++        versionName "0.4.0"
+         ndk {
+             abiFilters "arm64-v8a"
+         }
+@@ -185,6 +186,8 @@
+ }
+ 
+ dependencies {
++    implementation "dev.rikka.shizuku:api:13.1.5"
++    implementation "dev.rikka.shizuku:provider:13.1.5"
+     // The version of react-native is set by the React Native Gradle Plugin
+     implementation("com.facebook.react:react-android")
+ 
+diff --git a/android/app/src/main/AndroidManifest.xml b/android/app/src/main/AndroidManifest.xml
+--- a/android/app/src/main/AndroidManifest.xml
++++ b/android/app/src/main/AndroidManifest.xml
+@@ -21,6 +21,7 @@
+ 
+     <!-- Permissions -->
+     <uses-permission android:name="android.permission.INTERNET" />
++    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+     <uses-permission android:name="android.permission.CAMERA" />
+     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+@@ -50,6 +51,11 @@
+       android:networkSecurityConfig="@xml/network_security_config"
+       android:theme="@style/AppTheme"
+       android:supportsRtl="true">
++      <meta-data android:name="moe.shizuku.client.V3_SUPPORT" android:value="true" />
++      <provider android:name="rikka.shizuku.ShizukuProvider"
++        android:authorities="${applicationId}.shizuku"
++        android:multiprocess="false" android:enabled="true" android:exported="true"
++        android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+       <activity
+         android:name=".MainActivity"
+         android:label="@string/app_name"
+diff --git a/android/app/src/main/aidl/top/authorche/agent/shizuku/IJarvisService.aidl b/android/app/src/main/aidl/top/authorche/agent/shizuku/IJarvisService.aidl
+new file mode 100644
+--- /dev/null
++++ b/android/app/src/main/aidl/top/authorche/agent/shizuku/IJarvisService.aidl
+@@ -0,0 +1,5 @@
++package top.authorche.agent.shizuku;
++
++interface IJarvisService {
++    String execute(String operation, String argument);
++}
+diff --git a/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt b/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
+--- a/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
++++ b/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
+@@ -9,6 +9,8 @@
+   override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> =
+     listOf(
+       AgentDeviceModule(reactContext),
++      AndroidDocumentsModule(reactContext),
++      ShizukuModule(reactContext),
+       ExternalSpeechModule(reactContext),
+       LiveVoiceModule(reactContext),
+       JarvisTermuxModule(reactContext)
+diff --git a/android/app/src/main/java/top/authorche/agent/AndroidDocumentsModule.kt b/android/app/src/main/java/top/authorche/agent/AndroidDocumentsModule.kt
+new file mode 100644
+--- /dev/null
++++ b/android/app/src/main/java/top/authorche/agent/AndroidDocumentsModule.kt
+@@ -0,0 +1,119 @@
++package top.authorche.agent
++
++import android.app.Activity
++import android.content.Intent
++import android.net.Uri
++import android.provider.OpenableColumns
++import com.facebook.react.bridge.ActivityEventListener
++import com.facebook.react.bridge.Arguments
++import com.facebook.react.bridge.Promise
++import com.facebook.react.bridge.ReactApplicationContext
++import com.facebook.react.bridge.ReactContextBaseJavaModule
++import com.facebook.react.bridge.ReactMethod
++import com.facebook.react.bridge.BaseActivityEventListener
++
++/** Android document picker grants access only to files the user selects. */
++class AndroidDocumentsModule(private val context: ReactApplicationContext) : ReactContextBaseJavaModule(context) {
++  private var pending: Promise? = null
++  private val listener: ActivityEventListener = object : BaseActivityEventListener() {
++    override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
++      if (requestCode != PICK) return
++      val promise = pending ?: return
++      pending = null
++      if (resultCode != Activity.RESULT_OK || data?.data == null) {
++        promise.resolve(null)
++        return
++      }
++      try {
++        val uri = data.data!!
++        val flags = data.flags and (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
++        context.contentResolver.takePersistableUriPermission(uri, flags)
++        promise.resolve(readDocument(uri))
++      } catch (e: Exception) { promise.reject("DOCUMENT_READ_FAILED", e.message, e) }
++    }
++  }
++
++  init { context.addActivityEventListener(listener) }
++  override fun getName() = "AndroidDocumentsModule"
++
++  @ReactMethod fun openText(promise: Promise) {
++    if (pending != null) { promise.reject("PICKER_BUSY", "File picker already open"); return }
++    val activity = currentActivity ?: run { promise.reject("NO_ACTIVITY", "Android activity unavailable"); return }
++    pending = promise
++    try {
++      val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
++        addCategory(Intent.CATEGORY_OPENABLE)
++        type = "text/*"
++        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
++      }
++      activity.startActivityForResult(intent, PICK)
++    } catch (e: Exception) { pending = null; promise.reject("PICKER_FAILED", e.message, e) }
++  }
++
++  @ReactMethod fun readText(uriText: String, promise: Promise) {
++    try { promise.resolve(readDocument(authorizedUri(uriText))) }
++    catch (e: Exception) { promise.reject("DOCUMENT_READ_FAILED", e.message, e) }
++  }
++
++  @ReactMethod fun writeText(uriText: String, content: String, promise: Promise) {
++    try {
++      require(content.length <= 2_000_000) { "Text exceeds 2 MB" }
++      val uri = authorizedUri(uriText, write = true)
++      context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(content.toByteArray(Charsets.UTF_8)) }
++        ?: error("Cannot open document for writing")
++      promise.resolve("Saved selected Android document")
++    } catch (e: Exception) { promise.reject("DOCUMENT_WRITE_FAILED", e.message, e) }
++  }
++
++  @ReactMethod fun listGrants(promise: Promise) {
++    val grants = Arguments.createArray()
++    context.contentResolver.persistedUriPermissions.forEach { permission ->
++      grants.pushString(permission.uri.toString())
++    }
++    promise.resolve(grants)
++  }
++
++  @ReactMethod fun revokeGrants(promise: Promise) {
++    try {
++      context.contentResolver.persistedUriPermissions.forEach { permission ->
++        context.contentResolver.releasePersistableUriPermission(
++          permission.uri,
++          (if (permission.isReadPermission) Intent.FLAG_GRANT_READ_URI_PERMISSION else 0) or
++            (if (permission.isWritePermission) Intent.FLAG_GRANT_WRITE_URI_PERMISSION else 0)
++        )
++      }
++      promise.resolve("Доступ до вибраних файлів відкликано")
++    } catch (e: Exception) { promise.reject("DOCUMENT_REVOKE_FAILED", e.message, e) }
++  }
++
++  private fun authorizedUri(uriText: String, write: Boolean = false): Uri {
++    val uri = Uri.parse(uriText)
++    val permission = context.contentResolver.persistedUriPermissions.firstOrNull {
++      it.uri == uri && (if (write) it.isWritePermission else it.isReadPermission)
++    } ?: error("Select this document in Android's file picker first")
++    return permission.uri
++  }
++
++  private fun readDocument(uri: Uri): com.facebook.react.bridge.WritableMap {
++    val name = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
++      if (it.moveToFirst()) it.getString(0) else "document"
++    } ?: "document"
++    val bytes = context.contentResolver.openInputStream(uri)?.use { stream ->
++      val buffer = ByteArray(2_000_001)
++      var count = 0
++      while (count < buffer.size) {
++        val read = stream.read(buffer, count, buffer.size - count)
++        if (read < 0) break
++        count += read
++      }
++      require(count <= 2_000_000) { "Document exceeds 2 MB" }
++      buffer.copyOf(count)
++    } ?: error("Cannot open document")
++    return Arguments.createMap().apply {
++      putString("uri", uri.toString())
++      putString("name", name)
++      putString("text", bytes.toString(Charsets.UTF_8))
++    }
++  }
++  companion object { private const val PICK = 9123 }
++}
+diff --git a/android/app/src/main/java/top/authorche/agent/ShizukuModule.kt b/android/app/src/main/java/top/authorche/agent/ShizukuModule.kt
+new file mode 100644
+--- /dev/null
++++ b/android/app/src/main/java/top/authorche/agent/ShizukuModule.kt
+@@ -0,0 +1,73 @@
++package top.authorche.agent
++
++import android.content.ComponentName
++import android.content.ServiceConnection
++import android.content.pm.PackageManager
++import android.os.IBinder
++import com.facebook.react.bridge.Promise
++import com.facebook.react.bridge.ReactApplicationContext
++import com.facebook.react.bridge.ReactContextBaseJavaModule
++import com.facebook.react.bridge.ReactMethod
++import rikka.shizuku.Shizuku
++import top.authorche.agent.shizuku.IJarvisService
++import top.authorche.agent.shizuku.JarvisPrivilegedService
++import java.util.concurrent.Executors
++
++class ShizukuModule(private val context: ReactApplicationContext) : ReactContextBaseJavaModule(context) {
++  @Volatile private var service: IJarvisService? = null
++  private val executor = Executors.newSingleThreadExecutor()
++  private val connection = object : ServiceConnection {
++    override fun onServiceConnected(name: ComponentName?, binder: IBinder?) { service = IJarvisService.Stub.asInterface(binder) }
++    override fun onServiceDisconnected(name: ComponentName?) { service = null }
++  }
++  private val permissionListener = Shizuku.OnRequestPermissionResultListener { _, result ->
++    if (result == PackageManager.PERMISSION_GRANTED) connect()
++  }
++  init {
++    Shizuku.addRequestPermissionResultListener(permissionListener)
++    Shizuku.addBinderReceivedListenerSticky { if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) connect() }
++    Shizuku.addBinderDeadListener { service = null }
++  }
++
++  override fun getName() = "JarvisShizukuModule"
++  @ReactMethod fun getStatus(promise: Promise) {
++    try {
++      promise.resolve(when {
++        !Shizuku.pingBinder() -> "not_running"
++        Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED -> "permission_required"
++        service == null -> "connecting"
++        else -> "ready"
++      })
++    } catch (e: Exception) { promise.resolve("not_running") }
++  }
++  @ReactMethod fun requestAccess(promise: Promise) {
++    try {
++      if (!Shizuku.pingBinder()) { promise.resolve("Shizuku не запущено. Запустіть його через бездротове налагодження або ADB."); return }
++      if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
++        Shizuku.requestPermission(8401)
++        promise.resolve("Запит доступу Shizuku надіслано. Після дозволу відкрийте інструменти знову.")
++        return
++      }
++      connect()
++      promise.resolve(if (service != null) "Shizuku підключено" else "Shizuku: підключення…")
++    } catch (e: Exception) { promise.reject("SHIZUKU_ACCESS", e.message, e) }
++  }
++
++  @ReactMethod fun execute(operation: String, argument: String, promise: Promise) {
++    executor.execute {
++      try {
++        if (!Shizuku.pingBinder() || Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED)
++          error("Shizuku permission required")
++        val bound = service ?: error("Shizuku service is still connecting")
++        promise.resolve(bound.execute(operation, argument))
++      } catch (e: Exception) { promise.reject("SHIZUKU_OPERATION", e.message, e) }
++    }
++  }
++
++  private fun connect() {
++    if (service != null || !Shizuku.pingBinder()) return
++    val args = Shizuku.UserServiceArgs(ComponentName(context, JarvisPrivilegedService::class.java))
++      .daemon(false).processNameSuffix("jarvis_tools").version(1).debuggable(BuildConfig.DEBUG)
++    Shizuku.bindUserService(args, connection)
++  }
++}
+diff --git a/android/app/src/main/java/top/authorche/agent/shizuku/JarvisPrivilegedService.kt b/android/app/src/main/java/top/authorche/agent/shizuku/JarvisPrivilegedService.kt
+new file mode 100644
+--- /dev/null
++++ b/android/app/src/main/java/top/authorche/agent/shizuku/JarvisPrivilegedService.kt
+@@ -0,0 +1,45 @@
++package top.authorche.agent.shizuku
++
++import android.content.Context
++import java.util.concurrent.TimeUnit
++
++/** Validate in the privileged process too: no arbitrary shell strings cross this boundary. */
++class JarvisPrivilegedService() : IJarvisService.Stub() {
++  @Suppress("UNUSED_PARAMETER") constructor(context: Context) : this()
++
++  override fun execute(operation: String, argument: String): String {
++    val command = when (operation) {
++      "list_disabled" -> listOf("/system/bin/pm", "list", "packages", "-d")
++      "disable", "enable" -> {
++        require(PACKAGE.matches(argument)) { "Invalid package name" }
++        require(argument !in PROTECTED && !argument.startsWith("com.android.")) { "System package protected" }
++        if (operation == "disable") listOf("/system/bin/pm", "disable-user", "--user", "0", argument)
++        else listOf("/system/bin/pm", "enable", argument)
++      }
++      "animation_get" -> listOf("/system/bin/settings", "get", "global", "window_animation_scale")
++      "animation_set" -> {
++        require(argument in setOf("0", "0.5", "1")) { "Unsupported animation scale" }
++        listOf("/system/bin/settings", "put", "global", "window_animation_scale", argument)
++      }
++      else -> error("Unsupported system operation")
++    }
++    val process = ProcessBuilder(command).redirectErrorStream(true).start()
++    if (!process.waitFor(15, TimeUnit.SECONDS)) {
++      process.destroyForcibly()
++      error("System operation timed out")
++    }
++    val output = process.inputStream.bufferedReader().use { it.readText().take(16000) }
++    check(process.exitValue() == 0) { "Exit ${process.exitValue()}: $output" }
++    return output.ifBlank { "OK" }
++  }
++
++  companion object {
++    private val PACKAGE = Regex("^[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z0-9_]+)+$")
++    private val PROTECTED = setOf(
++      "android", "com.google.android.gms", "com.google.android.gsf",
++      "com.android.systemui", "com.android.settings", "com.android.permissioncontroller",
++      "com.android.packageinstaller", "com.google.android.packageinstaller",
++      "com.android.vending", "moe.shizuku.privileged.api", "top.authorche.agent"
++    )
++  }
++}
+diff --git a/src/agent/native/AndroidDocuments.ts b/src/agent/native/AndroidDocuments.ts
+new file mode 100644
+--- /dev/null
++++ b/src/agent/native/AndroidDocuments.ts
+@@ -0,0 +1,22 @@
++import {NativeModules, Platform} from 'react-native';
++
++export type AndroidDocument = {uri: string; name: string; text: string};
++type Module = {
++  openText(): Promise<AndroidDocument | null>;
++  readText(uri: string): Promise<AndroidDocument>;
++  writeText(uri: string, text: string): Promise<string>;
++  listGrants(): Promise<string[]>;
++  revokeGrants(): Promise<string>;
++};
++const module = NativeModules.AndroidDocumentsModule as Module | undefined;
++const requireModule = (): Module => {
++  if (Platform.OS !== 'android' || !module) throw new Error('Android document picker unavailable');
++  return module;
++};
++export const androidDocuments: Module = {
++  openText: () => requireModule().openText(),
++  readText: uri => requireModule().readText(uri),
++  writeText: (uri, text) => requireModule().writeText(uri, text),
++  listGrants: () => requireModule().listGrants(),
++  revokeGrants: () => requireModule().revokeGrants(),
++};
+diff --git a/src/agent/native/Shizuku.ts b/src/agent/native/Shizuku.ts
+new file mode 100644
+--- /dev/null
++++ b/src/agent/native/Shizuku.ts
+@@ -0,0 +1,14 @@
++import {NativeModules, Platform} from 'react-native';
++
++type Operation = 'list_disabled' | 'disable' | 'enable' | 'animation_get' | 'animation_set';
++type Module = {requestAccess(): Promise<string>; getStatus(): Promise<string>; execute(operation: Operation, argument: string): Promise<string>};
++const module = NativeModules.JarvisShizukuModule as Module | undefined;
++const requireModule = (): Module => {
++  if (Platform.OS !== 'android' || !module) throw new Error('Shizuku unavailable on this device');
++  return module;
++};
++export const shizuku: Module = {
++  requestAccess: () => requireModule().requestAccess(),
++  getStatus: () => requireModule().getStatus(),
++  execute: (operation, argument) => requireModule().execute(operation, argument),
++};
+diff --git a/src/agent/talents/AndroidDocumentEngine.ts b/src/agent/talents/AndroidDocumentEngine.ts
+new file mode 100644
+--- /dev/null
++++ b/src/agent/talents/AndroidDocumentEngine.ts
+@@ -0,0 +1,53 @@
++import {Alert} from 'react-native';
++import type {TalentEngine, TalentResult, ToolDefinition} from '../../services/talents/types';
++import {androidDocuments} from '../native/AndroidDocuments';
++
++const confirm = (title: string, detail: string): Promise<boolean> => new Promise(resolve => {
++  Alert.alert(title, detail, [
++    {text: 'Скасувати', style: 'cancel', onPress: () => resolve(false)},
++    {text: 'Дозволити', onPress: () => resolve(true)},
++  ], {cancelable: false});
++});
++
++export class AndroidDocumentEngine implements TalentEngine {
++  readonly name = 'android_document';
++  async execute(args: Record<string, any>): Promise<TalentResult> {
++    try {
++      const operation = String(args.operation ?? '');
++      if (operation === 'pick_read') {
++        const document = await androidDocuments.openText();
++        if (!document) return {type: 'text', summary: 'User cancelled file selection.'};
++        return {type: 'text', summary: `${document.name}\nURI: ${document.uri}\n${document.text.slice(0, 16000)}`};
++      }
++      const uri = String(args.uri ?? '');
++      if (!uri.startsWith('content://')) throw new Error('Select a document first. A content URI is required.');
++      if (operation === 'read') {
++        const document = await androidDocuments.readText(uri);
++        return {type: 'text', summary: `${document.name}\n${document.text.slice(0, 16000)}`};
++      }
++      if (operation === 'write') {
++        const content = String(args.content ?? '');
++        if (content.length > 2000000) throw new Error('Text exceeds 2 MB');
++        if (!(await confirm('Змінити файл Android?', `Jarvis запише ${content.length} символів у вибраний файл. Поточний вміст буде замінено.`))) {
++          return {type: 'text', summary: 'User declined file write.'};
++        }
++        return {type: 'text', summary: await androidDocuments.writeText(uri, content)};
++      }
++      throw new Error('Unsupported document operation');
++    } catch (error) {
++      const message = error instanceof Error ? error.message : String(error);
++      return {type: 'error', summary: message, errorMessage: message};
++    }
++  }
++  toToolDefinition(): ToolDefinition {
++    return {type: 'function', function: {
++      name: this.name,
++      description: 'Open Android system file picker and read text files chosen by the user; write only to a previously chosen document after confirmation.',
++      parameters: {type: 'object', additionalProperties: false, required: ['operation'], properties: {
++        operation: {type: 'string', enum: ['pick_read', 'read', 'write']},
++        uri: {type: 'string', description: 'content:// URI from the picker'},
++        content: {type: 'string'},
++      }},
++    }};
++  }
++}
+diff --git a/src/agent/talents/ShizukuEngine.ts b/src/agent/talents/ShizukuEngine.ts
+new file mode 100644
+--- /dev/null
++++ b/src/agent/talents/ShizukuEngine.ts
+@@ -0,0 +1,47 @@
++import {Alert} from 'react-native';
++import type {TalentEngine, TalentResult, ToolDefinition} from '../../services/talents/types';
++import {shizuku} from '../native/Shizuku';
++
++const PACKAGE = /^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z0-9_]+)+$/;
++const confirm = (detail: string): Promise<boolean> => new Promise(resolve => {
++  Alert.alert('Системна дія через Shizuku', detail, [
++    {text: 'Скасувати', style: 'cancel', onPress: () => resolve(false)},
++    {text: 'Виконати', onPress: () => resolve(true)},
++  ], {cancelable: false});
++});
++
++export class ShizukuEngine implements TalentEngine {
++  readonly name = 'shizuku_system';
++  async execute(args: Record<string, any>): Promise<TalentResult> {
++    try {
++      const operation = String(args.operation ?? '');
++      if (operation === 'status') return {type: 'text', summary: await shizuku.requestAccess()};
++      if (!['list_disabled', 'disable', 'enable', 'animation_get', 'animation_set'].includes(operation)) {
++        throw new Error('Unsupported Shizuku operation');
++      }
++      const argument = String(args.argument ?? '');
++      if (['disable', 'enable'].includes(operation) && !PACKAGE.test(argument)) throw new Error('Invalid app package');
++      if (operation === 'animation_set' && !['0', '0.5', '1'].includes(argument)) throw new Error('Choose 0, 0.5 or 1');
++      if (['disable', 'enable', 'animation_set'].includes(operation)) {
++        const detail = operation === 'disable'
++          ? `Вимкнути ${argument} для користувача 0? Застосунок може припинити працювати. Його можна знову ввімкнути.`
++          : operation === 'enable' ? `Увімкнути ${argument}?` : `Змінити масштаб анімації вікон на ${argument}?`;
++        if (!(await confirm(detail))) return {type: 'text', summary: 'User declined system change.'};
++      }
++      return {type: 'text', summary: await shizuku.execute(operation as 'list_disabled', argument)};
++    } catch (error) {
++      const message = error instanceof Error ? error.message : String(error);
++      return {type: 'error', summary: message, errorMessage: message};
++    }
++  }
++  toToolDefinition(): ToolDefinition {
++    return {type: 'function', function: {
++      name: this.name,
++      description: 'Limited Android shell operations through Shizuku. Disable or enable a non-system package for user 0 (reversible debloat), list disabled packages, read or set window animation scale. Every change requires user confirmation. Shizuku must be installed, running and authorized.',
++      parameters: {type: 'object', additionalProperties: false, required: ['operation'], properties: {
++        operation: {type: 'string', enum: ['status', 'list_disabled', 'disable', 'enable', 'animation_get', 'animation_set']},
++        argument: {type: 'string', description: 'Package name or animation value (0, 0.5, 1)'},
++      }},
++    }};
++  }
++}
+diff --git a/src/components/SidebarContent/SidebarContent.tsx b/src/components/SidebarContent/SidebarContent.tsx
+--- a/src/components/SidebarContent/SidebarContent.tsx
++++ b/src/components/SidebarContent/SidebarContent.tsx
+@@ -538,6 +538,16 @@
+         <View>
+           <Drawer.Section showDivider={false}>
+             <Drawer.Item
++              label="✦  Jarvis · Agent"
++              icon={() => <PalIcon stroke={theme.colors.primary} />}
++              onPress={() => props.navigation.navigate(ROUTES.JARVIS)}
++              style={styles.menuDrawerItem}
++              testID="drawer-item-jarvis"
++            />
++          </Drawer.Section>
++          <Divider style={styles.divider} />
++          <Drawer.Section showDivider={false}>
++            <Drawer.Item
+               label={l10n.components.sidebarContent.menuItems.chat}
+               icon={() => <ChatIcon stroke={theme.colors.primary} />}
+               onPress={() => props.navigation.navigate(ROUTES.CHAT)}
+diff --git a/src/screens/AgentScreen/AgentDashboard.tsx b/src/screens/AgentScreen/AgentDashboard.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/screens/AgentScreen/AgentDashboard.tsx
+@@ -0,0 +1,128 @@
++import React from 'react';
++import {Alert, Linking, StyleSheet, View} from 'react-native';
++import {observer} from 'mobx-react';
++import {Button, Card, Chip, Text, TextInput, useTheme} from 'react-native-paper';
++import {createSearchProvider, type SearchHit} from '../../services/search';
++import {searchProviderStore} from '../../store/SearchProviderStore';
++import {androidDocuments} from '../../agent/native/AndroidDocuments';
++import {shizuku} from '../../agent/native/Shizuku';
++
++const styles = StyleSheet.create({
++  root: {paddingHorizontal: 16, paddingTop: 12, paddingBottom: 6, gap: 10},
++  card: {borderRadius: 20},
++  content: {gap: 10},
++  row: {flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center'},
++  result: {paddingVertical: 8, gap: 3},
++});
++
++/** Visible, testable actions independent of the language model tool loop. */
++export const AgentDashboard = observer(({children}: {children: React.ReactNode}) => {
++  const theme = useTheme();
++  const [expanded, setExpanded] = React.useState(false);
++  const [query, setQuery] = React.useState('');
++  const [hits, setHits] = React.useState<SearchHit[]>([]);
++  const [busy, setBusy] = React.useState(false);
++  const [status, setStatus] = React.useState('');
++  const [shizukuStatus, setShizukuStatus] = React.useState('');
++  const [packageName, setPackageName] = React.useState('');
++  const provider = searchProviderStore.activeProviderId;
++
++  const search = async () => {
++    if (!query.trim() || !searchProviderStore.canSearch) return;
++    setBusy(true);
++    setStatus('');
++    setHits([]);
++    try {
++      const adapter = createSearchProvider(provider, () => searchProviderStore.getKey(provider));
++      const results = await adapter.search(query.trim(), {maxResults: searchProviderStore.resultCount});
++      setHits(results);
++      if (!results.length) setStatus('Результатів не знайдено. Спробуйте інший запит.');
++    } catch (error) {
++      setStatus(error instanceof Error ? error.message : String(error));
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  const openDocument = async () => {
++    try {
++      const file = await androidDocuments.openText();
++      if (file) setStatus(`Відкрито: ${file.name}\n${file.text.slice(0, 3000)}`);
++    } catch (error) {
++      Alert.alert('Файли Android', String(error));
++    }
++  };
++
++  const connectShizuku = async () => {
++    try {
++      setShizukuStatus(await shizuku.requestAccess());
++    } catch (error) {
++      setShizukuStatus(String(error));
++    }
++  };
++
++  const systemAction = (operation: 'disable' | 'enable' | 'animation_set', argument: string) => {
++    const detail = operation === 'disable'
++      ? `Вимкнути ${argument} для користувача 0? Це може вплинути на роботу системи. Дію можна скасувати кнопкою «Увімкнути».`
++      : operation === 'enable' ? `Увімкнути ${argument}?` : `Встановити масштаб анімації вікон ${argument}?`;
++    Alert.alert('Дія через Shizuku', detail, [
++      {text: 'Скасувати', style: 'cancel'},
++      {text: 'Виконати', onPress: () => shizuku.execute(operation, argument)
++        .then(setShizukuStatus).catch(error => setShizukuStatus(String(error)))},
++    ]);
++  };
++
++  return (
++    <View style={styles.root}>
++      <Card style={styles.card} mode="contained">
++        <Card.Content style={styles.content}>
++          <Text variant="titleMedium" style={{fontWeight: '700'}}>✦  Jarvis · Agent</Text>
++          <Text variant="bodySmall">Модель і інструменти Android в окремій розмові</Text>
++          <View style={styles.row}>
++            <Button mode="contained-tonal" compact onPress={() => setExpanded(!expanded)} testID="agent-tools-toggle">
++              {expanded ? 'Сховати інструменти' : 'Інструменти'}
++            </Button>
++            {children}
++          </View>
++        </Card.Content>
++      </Card>
++      {expanded && <Card style={styles.card} mode="outlined"><Card.Content style={styles.content}>
++        <Text variant="titleSmall">Пошук</Text>
++        <View style={styles.row}>
++          <Chip selected={provider === 'device_web'} onPress={() => searchProviderStore.setActiveProvider('device_web')}>Веб</Chip>
++          <Chip selected={provider === 'wikipedia'} onPress={() => searchProviderStore.setActiveProvider('wikipedia')}>Вікіпедія</Chip>
++        </View>
++        {!searchProviderStore.hasConsentedToSearch && <Button mode="outlined" onPress={() => searchProviderStore.setConsent(true)}>
++          Дозволити надсилати запити до пошукового сервісу
++        </Button>}
++        {searchProviderStore.hasConsentedToSearch && <>
++          <TextInput mode="outlined" dense label="Пошуковий запит" value={query} onChangeText={setQuery} onSubmitEditing={search} testID="agent-search-input" />
++          <Button mode="contained" disabled={!query.trim() || busy} loading={busy} onPress={search} testID="agent-search-button">Шукати</Button>
++        </>}
++        {hits.map(hit => <View key={hit.url} style={styles.result}>
++          <Text variant="titleSmall" onPress={() => Linking.openURL(hit.url)} style={{color: theme.colors.primary}}>{hit.title}</Text>
++          <Text variant="bodySmall">{hit.snippet}</Text>
++        </View>)}
++        <Text variant="titleSmall">Пристрій</Text>
++        <View style={styles.row}>
++          <Button compact mode="outlined" onPress={openDocument}>Відкрити файл</Button>
++          <Button compact mode="outlined" onPress={connectShizuku}>Shizuku</Button>
++        </View>
++        <Text variant="bodySmall">Файл відкривається через системний вибір. Доступ маємо лише до вибраних документів.</Text>
++        <TextInput mode="outlined" dense label="Пакет застосунку (наприклад, com.example.app)" value={packageName} onChangeText={setPackageName} autoCapitalize="none" />
++        <View style={styles.row}>
++          <Button compact mode="outlined" disabled={!/^[a-zA-Z][\w]*(\.[a-zA-Z0-9_]+)+$/.test(packageName)} onPress={() => systemAction('disable', packageName)}>Вимкнути</Button>
++          <Button compact mode="outlined" disabled={!/^[a-zA-Z][\w]*(\.[a-zA-Z0-9_]+)+$/.test(packageName)} onPress={() => systemAction('enable', packageName)}>Увімкнути</Button>
++          <Button compact mode="text" onPress={() => shizuku.execute('list_disabled', '').then(setShizukuStatus).catch(error => setShizukuStatus(String(error)))}>Вимкнені пакети</Button>
++        </View>
++        <View style={styles.row}>
++          <Button compact mode="text" onPress={() => shizuku.execute('animation_get', '').then(setShizukuStatus).catch(error => setShizukuStatus(String(error)))}>Анімація</Button>
++          <Button compact mode="text" onPress={() => systemAction('animation_set', '0.5')}>Анімація 0.5×</Button>
++          <Button compact mode="text" onPress={() => systemAction('animation_set', '1')}>Анімація 1×</Button>
++        </View>
++        {!!shizukuStatus && <Text variant="bodySmall">{shizukuStatus}</Text>}
++        {!!status && <Text variant="bodySmall" selectable>{status}</Text>}
++      </Card.Content></Card>}
++    </View>
++  );
++});
+diff --git a/src/screens/AgentScreen/index.tsx b/src/screens/AgentScreen/index.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/screens/AgentScreen/index.tsx
+@@ -0,0 +1,67 @@
++import React from 'react';
++import {ActivityIndicator, View} from 'react-native';
++import {Button, Text} from 'react-native-paper';
++import {useFocusEffect} from '@react-navigation/native';
++import {chatSessionStore, palStore} from '../../store';
++import {ChatScreen} from '../ChatScreen';
++
++const TITLE = 'Jarvis · Agent';
++
++/** Own drawer route and conversation; returning to Chat restores its session. */
++export const AgentScreen: React.FC = () => {
++  const [state, setState] = React.useState<'loading' | 'ready' | 'error'>('loading');
++  const [error, setError] = React.useState('');
++  const previous = React.useRef<string | null>(null);
++  const previousPal = React.useRef<string | undefined>(undefined);
++  const generation = React.useRef(0);
++
++  const prepare = React.useCallback(async (token: number) => {
++    setState('loading');
++    try {
++      const jarvis = await palStore.ensureJarvisPal();
++      await chatSessionStore.ensureReady();
++      if (generation.current !== token) return;
++      const existing = chatSessionStore.sessions.find(
++        session => session.title === TITLE && session.activePalId === jarvis.id,
++      );
++      if (existing) {
++        await chatSessionStore.setActiveSession(existing.id);
++      } else {
++        chatSessionStore.resetActiveSession();
++        await chatSessionStore.setActivePal(jarvis.id);
++        await chatSessionStore.createNewSession(TITLE);
++      }
++      if (!chatSessionStore.activeSessionId) throw new Error('Не вдалося створити розмову Jarvis. Перевірте локальну базу.');
++      if (generation.current === token) setState('ready');
++    } catch (cause) {
++      if (generation.current !== token) return;
++      setError(cause instanceof Error ? cause.message : String(cause));
++      setState('error');
++    }
++  }, []);
++
++  useFocusEffect(React.useCallback(() => {
++    previous.current = chatSessionStore.activeSessionId;
++    previousPal.current = chatSessionStore.activePalId;
++    const token = ++generation.current;
++    prepare(token);
++    return () => {
++      ++generation.current;
++      if (previous.current) {
++        chatSessionStore.setActiveSession(previous.current).catch(() => {});
++      } else {
++        chatSessionStore.resetActiveSession();
++        chatSessionStore.setActivePal(previousPal.current).catch(() => {});
++      }
++    };
++  }, [prepare]));
++
++  if (state === 'ready') return <ChatScreen agentMode />;
++  return (
++    <View style={{flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 16}}>
++      {state === 'loading' ? <ActivityIndicator /> : <Text>{error}</Text>}
++      {state === 'error' && <Button mode="contained" onPress={() => prepare(++generation.current)}>Спробувати знову</Button>}
++      <Text>Jarvis · Agent</Text>
++    </View>
++  );
++};
+diff --git a/src/screens/ChatScreen/ChatScreen.tsx b/src/screens/ChatScreen/ChatScreen.tsx
+--- a/src/screens/ChatScreen/ChatScreen.tsx
++++ b/src/screens/ChatScreen/ChatScreen.tsx
+@@ -32,6 +32,7 @@
+ 
+ import {VideoPalScreen} from './VideoPalScreen';
+ import {LiveVoicePanel} from '../../voice/LiveVoicePanel';
++import {AgentDashboard} from '../AgentScreen/AgentDashboard';
+ 
+ const renderBubble = ({
+   child,
+@@ -52,7 +53,7 @@
+   />
+ );
+ 
+-export const ChatScreen: React.FC = observer(() => {
++export const ChatScreen: React.FC<{agentMode?: boolean}> = observer(({agentMode = false}) => {
+   const currentMessageInfo = useRef<{
+     createdAt: number;
+     id: string;
+@@ -258,7 +259,7 @@
+   return (
+     <>
+       <ChatView
+-        customContent={<LiveVoicePanel send={handleSendPress} />}
++        customContent={agentMode ? <AgentDashboard><LiveVoicePanel send={handleSendPress} /></AgentDashboard> : undefined}
+         renderBubble={renderBubble}
+         messages={chatSessionStore.currentSessionMessages}
+         activePal={activePal}
+diff --git a/src/screens/SettingsScreen/AgentSettingsCard.tsx b/src/screens/SettingsScreen/AgentSettingsCard.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/screens/SettingsScreen/AgentSettingsCard.tsx
+@@ -0,0 +1,84 @@
++import React from 'react';
++import {Alert, Linking, PermissionsAndroid, Platform, View} from 'react-native';
++import {observer} from 'mobx-react';
++import {Button, Card, Text} from 'react-native-paper';
++import {PalSheet} from '../../components/PalsSheets';
++import {palStore} from '../../store';
++import {androidDocuments} from '../../agent/native/AndroidDocuments';
++import {shizuku} from '../../agent/native/Shizuku';
++
++/** Model, prompt and tools use the same persisted Pal editor as Pals. */
++export const AgentSettingsCard = observer(() => {
++  const [visible, setVisible] = React.useState(false);
++  const [microphone, setMicrophone] = React.useState(false);
++  const [camera, setCamera] = React.useState(false);
++  const [fileCount, setFileCount] = React.useState(0);
++  const [shizukuState, setShizukuState] = React.useState('not_running');
++  const [message, setMessage] = React.useState('');
++  const [jarvisId, setJarvisId] = React.useState<string | null>(null);
++  const jarvis = palStore.pals.find(p => p.id === jarvisId);
++
++  const refresh = React.useCallback(async () => {
++    if (Platform.OS !== 'android') return;
++    const [mic, cam, grants, state] = await Promise.all([
++      PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO),
++      PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.CAMERA),
++      androidDocuments.listGrants(),
++      shizuku.getStatus(),
++    ]);
++    setMicrophone(mic);
++    setCamera(cam);
++    setFileCount(grants.length);
++    setShizukuState(state);
++  }, []);
++
++  React.useEffect(() => { refresh().catch(error => setMessage(String(error))); }, [refresh]);
++
++  const openEditor = async () => {
++    try { const profile = await palStore.ensureJarvisPal(); setJarvisId(profile.id); setVisible(true); }
++    catch (error) { Alert.alert('Jarvis', String(error)); }
++  };
++
++  const request = async (permission: string) => {
++    const result = await PermissionsAndroid.request(permission as Parameters<typeof PermissionsAndroid.request>[0]);
++    if (result === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN) Linking.openSettings();
++    refresh().catch(error => setMessage(String(error)));
++  };
++
++  const revokeFiles = () => Alert.alert('Відкликати доступ до файлів?', 'Jarvis більше не зможе повторно відкривати вибрані документи без системного вибору.', [
++    {text: 'Скасувати', style: 'cancel'},
++    {text: 'Відкликати', onPress: () => androidDocuments.revokeGrants().then(() => refresh()).catch(error => setMessage(String(error)))},
++  ]);
++
++  return <>
++    <Card elevation={0} testID="agent-settings-card">
++      <Card.Title title="Jarvis · агент і дозволи" />
++      <Card.Content style={{gap: 10, paddingBottom: 16}}>
++        <Text variant="bodySmall">Модель, інструкції та набір інструментів агента можна змінити в його профілі.</Text>
++        <Button mode="contained-tonal" onPress={openEditor} testID="agent-profile-settings">Налаштувати агента</Button>
++        {Platform.OS === 'android' && <>
++          <Text variant="titleSmall">Дозволи Android</Text>
++          <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 8}}>
++            <Button mode="outlined" onPress={() => microphone ? Linking.openSettings() : request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO)}>
++              Мікрофон: {microphone ? 'надано' : 'надати'}
++            </Button>
++            <Button mode="outlined" onPress={() => camera ? Linking.openSettings() : request(PermissionsAndroid.PERMISSIONS.CAMERA)}>
++              Ліхтарик: {camera ? 'надано' : 'надати'}
++            </Button>
++          </View>
++          <Text variant="bodySmall">Доступ до файлів: {fileCount} вибраних документів. Новий файл обирається в системному вікні Android.</Text>
++          <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 8}}>
++            <Button mode="outlined" onPress={() => androidDocuments.openText().then(() => refresh()).catch(error => setMessage(String(error)))}>Обрати файл</Button>
++            {fileCount > 0 && <Button mode="text" onPress={revokeFiles}>Відкликати файли</Button>}
++          </View>
++          <Text variant="bodySmall">Shizuku: {shizukuState}. Дозвіл керується також у застосунку Shizuku.</Text>
++          <Button mode="outlined" onPress={() => shizuku.requestAccess().then(result => {setMessage(result); refresh();}).catch(error => setMessage(String(error)))}>Перевірити / надати Shizuku</Button>
++          <Button mode="text" onPress={() => Linking.openSettings()}>Системні дозволи застосунку</Button>
++        </>}
++        <Text variant="bodySmall">Мережевий пошук і відкликання згоди — у розділі «Internet Search» нижче. Запис файлів та зміни системи запитують підтвердження перед виконанням.</Text>
++        {!!message && <Text variant="bodySmall" selectable>{message}</Text>}
++      </Card.Content>
++    </Card>
++    {visible && jarvis && <PalSheet isVisible={visible} onClose={() => setVisible(false)} pal={jarvis} />}
++  </>;
++});
+diff --git a/src/screens/SettingsScreen/SettingsScreen.tsx b/src/screens/SettingsScreen/SettingsScreen.tsx
+--- a/src/screens/SettingsScreen/SettingsScreen.tsx
++++ b/src/screens/SettingsScreen/SettingsScreen.tsx
+@@ -49,6 +49,7 @@
+ 
+ import {createStyles} from './styles';
+ import {CacheTypeMenuRow, useMenuAnchor} from './CacheTypeMenuRow';
++import {AgentSettingsCard} from './AgentSettingsCard';
+ 
+ import {
+   modelStore,
+@@ -1164,6 +1165,8 @@
+             </Card.Content>
+           </Card>
+ 
++          <AgentSettingsCard />
++
+           {/* Internet Search */}
+           <Card elevation={0} style={styles.card} testID="internet-search-card">
+             <Card.Title title={l10n.settings.internetSearch.title} />
+diff --git a/src/screens/index.ts b/src/screens/index.ts
+--- a/src/screens/index.ts
++++ b/src/screens/index.ts
+@@ -1,6 +1,7 @@
+ export * from './AboutScreen';
+ export * from './BenchmarkScreen';
+ export * from './ChatScreen';
++export * from './AgentScreen';
+ export * from './ModelsScreen';
+ export * from './PalsScreen';
+ export * from './SettingsScreen';
+diff --git a/src/services/search/providers/__tests__/keyless.test.ts b/src/services/search/providers/__tests__/keyless.test.ts
+--- a/src/services/search/providers/__tests__/keyless.test.ts
++++ b/src/services/search/providers/__tests__/keyless.test.ts
+@@ -77,4 +77,20 @@
+       'html.duckduckgo.com/html/?q=hello',
+     );
+   });
++
++  it('parses reordered HTML attributes and decodes DuckDuckGo redirects', async () => {
++    global.fetch = jest.fn().mockResolvedValue({
++      ok: true,
++      status: 200,
++      headers: {get: () => null},
++      text: async () =>
++        '<div class="result"><a href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.org%2Fuk" class="result__a">Українська сторінка</a><div class="result__snippet">Опис</div></div>',
++    });
++    const hits = await new DeviceWebProvider().search('сторінка', {maxResults: 3});
++    expect(hits).toEqual([{
++      title: 'Українська сторінка',
++      url: 'https://example.org/uk',
++      snippet: 'Опис',
++    }]);
++  });
+ });
+diff --git a/src/services/search/providers/deviceWeb.ts b/src/services/search/providers/deviceWeb.ts
+--- a/src/services/search/providers/deviceWeb.ts
++++ b/src/services/search/providers/deviceWeb.ts
+@@ -58,11 +58,13 @@
+     });
+ 
+     const hits: SearchHit[] = [];
+-    const anchor =
+-      /<a[^>]+class=["'][^"']*result__a[^"']*["'][^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
++    // Attribute order and quoting vary in the public HTML response.
++    const anchor = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
+     let match: RegExpExecArray | null;
+     while ((match = anchor.exec(html)) && hits.length < Math.min(8, Math.max(1, opts.maxResults))) {
+-      const url = normalizeHref(match[1]);
++      if (!/\bclass\s*=\s*["'][^"']*\bresult__a\b/i.test(match[1])) continue;
++      const rawHref = /\bhref\s*=\s*["']([^"']+)["']/i.exec(match[1])?.[1];
++      const url = rawHref ? normalizeHref(rawHref) : null;
+       const title = stripMarkup(match[2]);
+       if (!url || !title) continue;
+       const window = html.slice(anchor.lastIndex, anchor.lastIndex + 2800);
+diff --git a/src/services/talents/index.ts b/src/services/talents/index.ts
+--- a/src/services/talents/index.ts
++++ b/src/services/talents/index.ts
+@@ -12,6 +12,8 @@
+ import {DeviceActionEngine} from '../../agent/talents/DeviceActionEngine';
+ import {WorkspaceEngine} from '../../agent/talents/WorkspaceEngine';
+ import {PythonExecEngine} from '../../agent/talents/PythonExecEngine';
++import {AndroidDocumentEngine} from '../../agent/talents/AndroidDocumentEngine';
++import {ShizukuEngine} from '../../agent/talents/ShizukuEngine';
+ 
+ export {TalentRegistry, talentRegistry} from './TalentRegistry';
+ export {TalentUIRegistry, talentUIRegistry} from './TalentUIRegistry';
+@@ -74,6 +76,8 @@
+   talentRegistry.register(new DeviceActionEngine());
+   talentRegistry.register(new WorkspaceEngine());
+   talentRegistry.register(new PythonExecEngine());
++  talentRegistry.register(new AndroidDocumentEngine());
++  talentRegistry.register(new ShizukuEngine());
+   registered = true;
+ }
+ 
+diff --git a/src/store/ChatSessionStore.ts b/src/store/ChatSessionStore.ts
+--- a/src/store/ChatSessionStore.ts
++++ b/src/store/ChatSessionStore.ts
+@@ -71,6 +71,7 @@
+ delete defaultCompletionSettings.stop;
+ 
+ class ChatSessionStore {
++  private initializationPromise: Promise<void> | null = null;
+   sessions: SessionMetaData[] = [];
+   activeSessionId: string | null = null;
+   isEditMode: boolean = false;
+@@ -137,7 +138,11 @@
+ 
+   constructor() {
+     makeAutoObservable(this);
+-    this.initialize();
++    this.initializationPromise = this.initialize();
++  }
++
++  async ensureReady(): Promise<void> {
++    await this.initializationPromise;
+   }
+ 
+   async initialize() {
+diff --git a/src/store/PalStore.ts b/src/store/PalStore.ts
+--- a/src/store/PalStore.ts
++++ b/src/store/PalStore.ts
+@@ -54,8 +54,11 @@
+ // (check key, find existing, create, set key) instead of a third copy.
+ const LOOKIE_SEEDED_KEY = 'PalStore.builtin.Lookie.seeded';
+ const JARVIS_SEEDED_KEY = 'PalStore.builtin.Jarvis.seeded';
++const JARVIS_TOOLS_V04_KEY = 'PalStore.builtin.Jarvis.tools.v04';
++const JARVIS_ID_KEY = 'PalStore.builtin.Jarvis.id';
+ 
+ class PalStore {
++  private initializationPromise: Promise<void> | null = null;
+   // Core pals storage
+   pals: Pal[] = [];
+ 
+@@ -77,7 +80,7 @@
+ 
+   constructor() {
+     makeAutoObservable(this);
+-    this.initialize();
++    this.initializationPromise = this.initialize();
+     console.log('Pal store initialized');
+     console.log('Pals number: ', this.pals.length);
+   }
+@@ -772,36 +775,44 @@
+    * `defaultModel` bound from a prior session (e.g. by the onboarding
+    * recommended-pal picker) survives subsequent app starts.
+    */
+-  private async initializeJarvisPal(): Promise<void> {
+-    try {
+-      if ((await AsyncStorage.getItem(JARVIS_SEEDED_KEY)) === 'true') {
++  async ensureJarvisPal(): Promise<Pal> {
++    await this.initializationPromise;
++    // The first-run marker can survive a failed database write or a restored
++    // backup that omitted the Pal. An explicit visit to Jarvis repairs it.
++    await this.initializeJarvisPal(true);
++    const jarvis = await this.findJarvisPal();
++    if (!jarvis) {
++      throw new Error('Не вдалося створити профіль Jarvis у локальній базі.');
++    }
++    return jarvis;
++  }
++
++  private async findJarvisPal(): Promise<Pal | undefined> {
++    const id = await AsyncStorage.getItem(JARVIS_ID_KEY);
++    return this.pals.find(p => p.id === id && p.source === 'local') ??
++      this.pals.find(p => p.name === 'Jarvis' && p.source === 'local');
++  }
++
++  private async initializeJarvisPal(force = false): Promise<void> {
++    try {
++      if (!force && (await AsyncStorage.getItem(JARVIS_SEEDED_KEY)) === 'true') {
+         return;
+       }
+ 
+-      const existing = this.pals.find(
+-        p => p.name === 'Jarvis' && p.source === 'local',
+-      );
++      const existing = await this.findJarvisPal();
+       if (existing) {
+-        const requiredTalents = [
+-          {name: 'render_html', necessity: 'optional' as const},
+-          {name: 'calculate', necessity: 'optional' as const},
+-          {name: 'datetime', necessity: 'optional' as const},
+-          {name: 'web_search', necessity: 'optional' as const},
+-          {name: 'read_url', necessity: 'optional' as const},
+-          {name: 'device_status', necessity: 'optional' as const},
+-          {name: 'device_action', necessity: 'optional' as const},
+-          {name: 'workspace', necessity: 'optional' as const},
+-          {name: 'python_exec', necessity: 'optional' as const},
+-        ];
+-        const existingTalentNames = new Set(
+-          existing.pact?.talents?.map(talent => talent.name) ?? [],
+-        );
+-        if (
+-          requiredTalents.some(talent => !existingTalentNames.has(talent.name))
+-        ) {
++        await AsyncStorage.setItem(JARVIS_ID_KEY, existing.id);
++        if (await AsyncStorage.getItem(JARVIS_TOOLS_V04_KEY) !== 'true') {
++          const talents = [...(existing.pact?.talents ?? [])];
++          for (const name of ['android_document', 'shizuku_system']) {
++            if (!talents.some(talent => talent.name === name)) {
++              talents.push({name, necessity: 'optional'});
++            }
++          }
+           await this.updatePal(existing.id, {
+-            pact: {talents: requiredTalents},
++            pact: {talents},
+           });
++          await AsyncStorage.setItem(JARVIS_TOOLS_V04_KEY, 'true');
+         }
+         await AsyncStorage.setItem(JARVIS_SEEDED_KEY, 'true');
+         return;
+@@ -832,13 +843,17 @@
+             {name: 'device_action', necessity: 'optional'},
+             {name: 'workspace', necessity: 'optional'},
+             {name: 'python_exec', necessity: 'optional'},
++            {name: 'android_document', necessity: 'optional'},
++            {name: 'shizuku_system', necessity: 'optional'},
+           ],
+         },
+         source: 'local',
+       };
+ 
+-      await this.addPal(palData);
++      const created = await this.addPal(palData);
++      await AsyncStorage.setItem(JARVIS_ID_KEY, created.id);
+       await AsyncStorage.setItem(JARVIS_SEEDED_KEY, 'true');
++      await AsyncStorage.setItem(JARVIS_TOOLS_V04_KEY, 'true');
+     } catch (error) {
+       console.error('Error initializing Jarvis agent:', error);
+     }
+diff --git a/src/utils/navigationConstants.ts b/src/utils/navigationConstants.ts
+--- a/src/utils/navigationConstants.ts
++++ b/src/utils/navigationConstants.ts
+@@ -2,6 +2,7 @@
+ export const ROUTES = {
+   // Main app routes
+   CHAT: 'Chat',
++  JARVIS: 'Jarvis',
+   MODELS: 'Models',
+   PALS: 'Pals (experimental)',
+   BENCHMARK: 'Benchmark',
+diff --git a/src/voice/LiveVoicePanel.tsx b/src/voice/LiveVoicePanel.tsx
+--- a/src/voice/LiveVoicePanel.tsx
++++ b/src/voice/LiveVoicePanel.tsx
+@@ -132,15 +132,14 @@
+     }, [phase, isInferencing, lastAnswer, listen, localOnly]);
+ 
+     const activateJarvis = async (): Promise<boolean> => {
+-      const jarvis = palStore.pals.find(
+-        p => p.name === 'Jarvis' && p.source === 'local',
+-      );
+-      if (jarvis) {
++      try {
++        const jarvis = await palStore.ensureJarvisPal();
+         await chatSessionStore.setActivePal(jarvis.id);
+         return true;
+-      }
+-      Alert.alert('Jarvis', 'Агент ще ініціалізується. Спробуйте знову.');
+-      return false;
++      } catch (error) {
++        Alert.alert('Jarvis', error instanceof Error ? error.message : String(error));
++        return false;
++      }
+     };
+ 
+     const prepareUkrainianVoice = async () => {
+@@ -196,12 +195,6 @@
+     return (
+       <View style={styles.panel}>
+         <View style={styles.actions}>
+-          <Button
+-            mode="text"
+-            testID="jarvis-agent-button"
+-            onPress={activateJarvis}>
+-            Агент Jarvis · 9 інструментів
+-          </Button>
+           <Button
+             mode={phase === 'idle' ? 'contained' : 'outlined'}
+             testID="jarvis-live-button"
+@@ -228,12 +221,6 @@
+             {localOnly ? 'локальне розпізнавання' : 'системний голосовий рушій'}
+           </Text>
+         )}
+-        {phase === 'idle' && (
+-          <Text variant="bodySmall">
+-            Агент: веб, сторінки, телефон, файли, Python, застосунки, ліхтарик,
+-            гучність, будильник і таймер. Голос Live: локальний Supertonic (uk).
+-          </Text>
+-        )}
+       </View>
+     );
+   },
