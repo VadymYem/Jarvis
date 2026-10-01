@@ -14,7 +14,7 @@ index 136657d..28147a8 100644
              abiFilters "arm64-v8a"
          }
 diff --git a/android/app/src/main/java/top/authorche/agent/OfflineZimModule.kt b/android/app/src/main/java/top/authorche/agent/OfflineZimModule.kt
-index 6cbd23d..857d8bc 100644
+index 6cbd23d..b2a1b6b 100644
 --- a/android/app/src/main/java/top/authorche/agent/OfflineZimModule.kt
 +++ b/android/app/src/main/java/top/authorche/agent/OfflineZimModule.kt
 @@ -11,19 +11,54 @@ import com.facebook.react.bridge.BaseActivityEventListener
@@ -74,7 +74,7 @@ index 6cbd23d..857d8bc 100644
  
    private val listener: ActivityEventListener = object : BaseActivityEventListener() {
      override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
-@@ -33,17 +68,31 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
+@@ -33,17 +68,32 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
        if (resultCode != Activity.RESULT_OK || data?.data == null) { promise.resolve(null); return }
        val uri = data.data!!
        executor.execute {
@@ -92,6 +92,7 @@ index 6cbd23d..857d8bc 100644
 -          if (old != null && old != uri.toString()) release(Uri.parse(old))
 -          promise.resolve(info)
 +          check(archiveDir.isDirectory || archiveDir.mkdirs()) { "Не вдалося створити папку для ZIM" }
++          archiveDir.listFiles()?.filter { it.name.endsWith(".partial.zim") }?.forEach { it.delete() }
 +          val expected = context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use {
 +            if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else -1L
 +          } ?: -1L
@@ -113,7 +114,7 @@ index 6cbd23d..857d8bc 100644
        }
      }
    }
-@@ -59,108 +108,97 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
+@@ -59,108 +109,97 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
          addCategory(Intent.CATEGORY_OPENABLE)
          type = "*/*"
@@ -280,7 +281,7 @@ index 6cbd23d..857d8bc 100644
    override fun invalidate() {
      context.removeActivityEventListener(listener)
      pending?.reject("ZIM_CLOSED", "Archive picker closed")
-@@ -169,5 +207,5 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
+@@ -169,5 +208,5 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
      super.invalidate()
    }
  
@@ -394,6 +395,21 @@ index a5aa2f6..2400ea5 100644
      // 2. Registered talent UI for this tool name — render its result.
      //    The metrics footer (post-hoc tokens + duration) renders as a
      //    sibling beneath the result so each TalentUI can stay focused
+diff --git a/src/hooks/useChatSession.ts b/src/hooks/useChatSession.ts
+index c816e05..b6888c3 100644
+--- a/src/hooks/useChatSession.ts
++++ b/src/hooks/useChatSession.ts
+@@ -146,6 +146,10 @@ const prepareCompletion = async ({
+     maxToolTurns: DEFAULT_MAX_TURNS,
+   });
+   if (knowledgeEvidence) systemPromptFragments.push(wrapUntrusted(knowledgeEvidence));
++  if (sessionToolNames.includes('python_exec') &&
++      /(?:намалюй|створи|згенеруй|зроби|draw|create|generate)[^.!?]{0,90}(?:картин|зображен|малюн|графік|image|picture|plot)/i.test(message.text)) {
++    systemPromptFragments.push('For a requested drawing or chart, use python_exec to save a real PNG in the workspace (for example images/result.png) with Pillow or matplotlib. If tool calling is unavailable, provide one complete fenced ```python code block that saves a relative PNG file, so the user can run it with the button. Do not claim an image was made until Python has run.');
++  }
+ 
+   const messages = assembleMessages(systemMessages, systemPromptFragments, [
+     ...chatMessages,
 diff --git a/src/knowledge/offlineZim.ts b/src/knowledge/offlineZim.ts
 index c499ef8..6f6f2c9 100644
 --- a/src/knowledge/offlineZim.ts
