@@ -1791,6 +1791,18 @@ diff --git a/src/store/SearchProviderStore.ts b/src/store/SearchProviderStore.ts
    }
  
    setActiveProvider(id: SearchProviderId) {
+diff --git a/src/store/__tests__/PalStore.test.ts b/src/store/__tests__/PalStore.test.ts
+--- a/src/store/__tests__/PalStore.test.ts
++++ b/src/store/__tests__/PalStore.test.ts
+@@ -401,7 +401,7 @@ describe('PalStore', () => {
+       // observed objects in Proxies, so Object.is equality is brittle;
+       // value equality verifies the field wasn't cleared or rewritten).
+       expect(jarvis?.defaultModel).toEqual(boundModel);
+-      expect(jarvis?.pact?.talents?.map(t => t.name)).toEqual(['workspace', 'python_exec', 'android_document']);
++      expect(jarvis?.pact?.talents?.map(t => t.name)).toEqual(['web_search', 'read_url', 'workspace', 'python_exec', 'android_document']);
+       expect(palRepository.createPal).not.toHaveBeenCalled();
+     });
+ 
 diff --git a/src/store/onboarding/onboardingPals.ts b/src/store/onboarding/onboardingPals.ts
 --- a/src/store/onboarding/onboardingPals.ts
 +++ b/src/store/onboarding/onboardingPals.ts
@@ -1868,11 +1880,3 @@ diff --git a/src/store/PalStore.ts b/src/store/PalStore.ts
      } catch (error) {
        console.error('Error initializing Jarvis agent:', error);
      }
-@@ -401,7 +411,7 @@ describe('PalStore', () => {
-       // observed objects in Proxies, so Object.is equality is brittle;
-       // value equality verifies the field wasn't cleared or rewritten).
-       expect(jarvis?.defaultModel).toEqual(boundModel);
--      expect(jarvis?.pact?.talents?.map(t => t.name)).toEqual(['workspace', 'python_exec', 'android_document']);
-+      expect(jarvis?.pact?.talents?.map(t => t.name)).toEqual(['web_search', 'read_url', 'workspace', 'python_exec', 'android_document']);
-       expect(palRepository.createPal).not.toHaveBeenCalled();
-     });
