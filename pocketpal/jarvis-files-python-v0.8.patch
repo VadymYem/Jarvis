@@ -934,10 +934,20 @@ index 43de19c..b7d68bf 100644
        console.error('Error initializing Jarvis agent:', error);
      }
 diff --git a/src/store/__tests__/PalStore.test.ts b/src/store/__tests__/PalStore.test.ts
-index 0ce0151..51e60ae 100644
+index 0ce0151..cbc0014 100644
 --- a/src/store/__tests__/PalStore.test.ts
 +++ b/src/store/__tests__/PalStore.test.ts
-@@ -398,6 +398,7 @@ describe('PalStore', () => {
+@@ -386,6 +386,9 @@ describe('PalStore', () => {
+       runInAction(() => {
+         palStore.pals = [existingJarvis];
+       });
++      (palRepository.updatePal as jest.Mock).mockImplementation(
++        async (_id: string, updates: Partial<Pal>) => ({...existingJarvis, ...updates}),
++      );
+ 
+       await callInitializeJarvisPal();
+ 
+@@ -398,6 +401,7 @@ describe('PalStore', () => {
        // observed objects in Proxies, so Object.is equality is brittle;
        // value equality verifies the field wasn't cleared or rewritten).
        expect(jarvis?.defaultModel).toEqual(boundModel);
