@@ -14,7 +14,7 @@ index 136657d..28147a8 100644
              abiFilters "arm64-v8a"
          }
 diff --git a/android/app/src/main/java/top/authorche/agent/OfflineZimModule.kt b/android/app/src/main/java/top/authorche/agent/OfflineZimModule.kt
-index 6cbd23d..dadc36f 100644
+index 6cbd23d..857d8bc 100644
 --- a/android/app/src/main/java/top/authorche/agent/OfflineZimModule.kt
 +++ b/android/app/src/main/java/top/authorche/agent/OfflineZimModule.kt
 @@ -11,19 +11,54 @@ import com.facebook.react.bridge.BaseActivityEventListener
@@ -99,7 +99,7 @@ index 6cbd23d..dadc36f 100644
 +            error("Бракує вільного місця: для імпорту потрібна копія архіву ($expected байтів).")
 +          }
 +          val id = UUID.randomUUID().toString()
-+          temp = File(archiveDir, "$id.partial")
++          temp = File(archiveDir, "$id.partial.zim")
 +          val input = context.contentResolver.openInputStream(uri) ?: error("Не вдалося прочитати вибраний ZIM")
 +          input.use { source -> temp!!.outputStream().buffered().use { destination -> source.copyTo(destination, 1024 * 1024) } }
 +          if (expected > 0 && temp!!.length() != expected) error("Копіювання архіву не завершено. Перевірте вільне місце.")
@@ -113,7 +113,7 @@ index 6cbd23d..dadc36f 100644
        }
      }
    }
-@@ -59,108 +108,88 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
+@@ -59,108 +108,97 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
          addCategory(Intent.CATEGORY_OPENABLE)
          type = "*/*"
@@ -164,10 +164,11 @@ index 6cbd23d..dadc36f 100644
 -          try {
 -            val request = Query(query.trim().take(180))
 +        val max = limit.toInt().coerceIn(1, 5)
-+        var count = 0
++        val perArchive = mutableListOf<List<WritableMap>>()
 +        for (stored in list()) {
 +          val archiveFile = file(stored)
-+          if (!archiveFile.isFile || count >= max) continue
++          if (!archiveFile.isFile) continue
++          val found = mutableListOf<WritableMap>()
 +          withArchive(archiveFile) { archive ->
 +            val searcher = Searcher(archive)
              try {
@@ -186,7 +187,7 @@ index 6cbd23d..dadc36f 100644
 -                val item = archive.getEntryByPath(path).getItem(true)
 -                if (item.size in 1L..250_000L && item.mimetype.startsWith("text/html")) {
 -                  val blob = item.data
-+                  val iterator = search.getResults(0, max - count)
++                  val iterator = search.getResults(0, max)
                    try {
 -                    Html.fromHtml(blob.data.toString(Charsets.UTF_8), Html.FROM_HTML_MODE_COMPACT)
 -                      .toString().replace(Regex("\\s+"), " ").trim().take(1500)
@@ -206,7 +207,7 @@ index 6cbd23d..dadc36f 100644
 -              } finally { search.dispose() }
 -            } finally { request.dispose() }
 -          } finally { searcher.dispose() }
-+                    while (iterator.hasNext() && count < max) {
++                    while (iterator.hasNext() && found.size < max) {
 +                      val title = iterator.title ?: break
 +                      val path = iterator.path ?: ""
 +                      val snippet = Html.fromHtml(iterator.snippet ?: "", Html.FROM_HTML_MODE_COMPACT).toString().trim().take(450)
@@ -219,16 +220,24 @@ index 6cbd23d..dadc36f 100644
 +                          finally { blob.dispose() }
 +                        } else snippet
 +                      } catch (_: Exception) { snippet }
-+                      rows.pushMap(Arguments.createMap().apply {
++                      found.add(Arguments.createMap().apply {
 +                        putString("title", title); putString("path", path)
 +                        putString("excerpt", excerpt.ifBlank { snippet }); putString("archive", stored.name)
 +                      })
-+                      iterator.next(); count++
++                      iterator.next()
 +                    }
 +                  } finally { iterator.dispose() }
 +                } finally { search.dispose() }
 +              } finally { request.dispose() }
 +            } finally { searcher.dispose() }
++          }
++          perArchive.add(found)
++        }
++        // Interleave archives so one large index cannot hide the others.
++        var count = 0
++        for (rank in 0 until max) {
++          for (found in perArchive) {
++            if (rank < found.size && count < max) { rows.pushMap(found[rank]); count++ }
 +          }
          }
          promise.resolve(rows)
@@ -271,7 +280,7 @@ index 6cbd23d..dadc36f 100644
    override fun invalidate() {
      context.removeActivityEventListener(listener)
      pending?.reject("ZIM_CLOSED", "Archive picker closed")
-@@ -169,5 +198,5 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
+@@ -169,5 +207,5 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
      super.invalidate()
    }
  
@@ -512,6 +521,57 @@ index 22b5008..816aa28 100644
        {!!message && <Text variant="bodySmall" selectable>{message}</Text>}
      </Card.Content>
    </Card>;
+diff --git a/src/screens/SettingsScreen/SettingsScreen.tsx b/src/screens/SettingsScreen/SettingsScreen.tsx
+index bcfba75..d332f78 100644
+--- a/src/screens/SettingsScreen/SettingsScreen.tsx
++++ b/src/screens/SettingsScreen/SettingsScreen.tsx
+@@ -59,6 +59,7 @@ import {
+   searchProviderStore,
+ } from '../../store';
+ import type {SearchProviderId} from '../../services/search/types';
++import {createSearchProvider} from '../../services/search';
+ 
+ import {CacheType, ModelType} from '../../utils/types';
+ import {
+@@ -104,6 +105,8 @@ export const SettingsScreen: React.FC = observer(() => {
+     y: number;
+   }>({x: 0, y: 0});
+   const [showSearchKeySheet, setShowSearchKeySheet] = useState(false);
++  const [searchProbe, setSearchProbe] = useState('');
++  const [searchProbeBusy, setSearchProbeBusy] = useState(false);
+   const searchProviderButtonRef = useRef<View>(null);
+   const [gpuSupported, setGpuSupported] = useState(false);
+   const [draftModelAnchor, setDraftModelAnchor] = useState<{
+@@ -1270,7 +1273,7 @@ export const SettingsScreen: React.FC = observer(() => {
+                   <Text variant="labelSmall" style={styles.textDescription}>
+                     Без API-ключа. HTTPS-запит іде прямо з телефона до
+                     пошукового сервісу. RSS і HTML відповіді обробляються
+-                    локально. Зовнішній сервіс може обмежувати запити.
++                    локально. Якщо сервіси повертають 403, доступні лише онлайн-статті Wikipedia. Для загального пошуку виберіть провайдера з ключем або власний SearXNG.
+                   </Text>
+                 )}
+                 {activeSearchProviderId === 'searxng' && (
+@@ -1280,6 +1283,20 @@ export const SettingsScreen: React.FC = observer(() => {
+                     результати локально.
+                   </Text>
+                 )}
++                <Button mode="outlined" disabled={!searchProviderStore.canSearch || searchProbeBusy}
++                  loading={searchProbeBusy} onPress={async () => {
++                    setSearchProbeBusy(true);
++                    try {
++                      const hits = await createSearchProvider(activeSearchProviderId,
++                        () => searchProviderStore.getKey(activeSearchProviderId))
++                        .search('Київ', {maxResults: 3});
++                      setSearchProbe(hits.length
++                        ? `Знайдено ${hits.length}: ${hits[0].title}`
++                        : 'Сервіс відповів без результатів.');
++                    } catch (error) { setSearchProbe(String(error)); }
++                    finally { setSearchProbeBusy(false); }
++                  }}>Перевірити пошук</Button>
++                {!!searchProbe && <Text variant="bodySmall" selectable>{searchProbe}</Text>}
+                 {activeSearchProviderId !== 'device_web' && (
+                   <>
+                     <Divider style={styles.divider} />
 diff --git a/src/services/search/providers/__tests__/keyless.test.ts b/src/services/search/providers/__tests__/keyless.test.ts
 index 89fc917..127625e 100644
 --- a/src/services/search/providers/__tests__/keyless.test.ts
