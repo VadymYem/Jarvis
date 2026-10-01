@@ -1803,21 +1803,6 @@ diff --git a/src/services/talents/registerTalentUIs.ts b/src/services/talents/re
    registered = true;
  }
  
-diff --git a/src/store/SearchProviderStore.ts b/src/store/SearchProviderStore.ts
---- a/src/store/SearchProviderStore.ts
-+++ b/src/store/SearchProviderStore.ts
-@@ -112,7 +112,10 @@ class SearchProviderStore {
-   }
- 
-   get canSearch(): boolean {
--    return this.hasConsentedToSearch && this.isProviderConfigured;
-+    return (
-+      this.isProviderConfigured &&
-+      (this.activeProviderId === 'device_web' || this.hasConsentedToSearch)
-+    );
-   }
- 
-   setActiveProvider(id: SearchProviderId) {
 diff --git a/src/store/__tests__/PalStore.test.ts b/src/store/__tests__/PalStore.test.ts
 --- a/src/store/__tests__/PalStore.test.ts
 +++ b/src/store/__tests__/PalStore.test.ts
