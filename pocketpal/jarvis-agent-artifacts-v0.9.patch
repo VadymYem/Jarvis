@@ -1,3 +1,27 @@
+diff --git a/android/app/build.gradle b/android/app/build.gradle
+--- a/android/app/build.gradle
++++ b/android/app/build.gradle
+@@ -87,8 +87,8 @@ android {
+         applicationId "top.authorche.agent"
+         minSdkVersion rootProject.ext.minSdkVersion
+         targetSdkVersion rootProject.ext.targetSdkVersion
+-        versionCode 8
+-        versionName "0.8.0"
++        versionCode 9
++        versionName "0.9.0"
+         ndk {
+             abiFilters "arm64-v8a"
+         }
+@@ -188,7 +188,10 @@ chaquopy {
+     defaultConfig {
+         version = "3.12"
+-        pip { install("pillow==11.0.0") }
++        pip {
++            install("pillow==11.0.0")
++            install("pypdf==5.9.0")
++        }
+     }
+ }
 diff --git a/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt b/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
 --- a/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
 +++ b/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
@@ -1770,24 +1794,85 @@ diff --git a/src/store/SearchProviderStore.ts b/src/store/SearchProviderStore.ts
 diff --git a/src/store/onboarding/onboardingPals.ts b/src/store/onboarding/onboardingPals.ts
 --- a/src/store/onboarding/onboardingPals.ts
 +++ b/src/store/onboarding/onboardingPals.ts
-@@ -116,7 +116,7 @@ const PAL_PIP: OnboardingPalDef = {
+@@ -114,12 +114,14 @@ const PAL_PIP: OnboardingPalDef = {
+   key: 'pip',
+   name: 'Jarvis',
    description:
-     'A private multilingual AI agent that runs locally on your phone.',
+     'A private multilingual pocket AI with offline knowledge.',
    systemPrompt:
 -    "You are Jarvis, AuthorChe's private pocket AI. Reply in the user's language, with Ukrainian as the default. Use the supplied offline or web evidence accurately, cite article titles or source URLs, and never claim to control Android. Say if an archive may be outdated.",
 +    "You are Jarvis, AuthorChe's private pocket AI. Reply in the user's language, with Ukrainian as the default. Operate as an agent, not a code-only chatbot. For current or external facts, use web_search first and read_url for important sources; never claim you searched if the tool failed. For an image, PDF, DOCX, HTML page, source file, report or other artifact, use the available workspace/python tools to create the actual file and return the resulting artifact in chat instead of merely printing implementation code. Use Android document tools to read user-selected files and offline ZIM evidence when relevant. Clearly mark offline knowledge as potentially outdated. Never claim a photorealistic AI image was generated unless a real image-generation model produced it.",
    color: ['#063B32', '#63E6BE'],
    pact: {talents: [
-     {name: 'web_search', necessity: 'optional'},
++    {name: 'web_search', necessity: 'optional'},
++    {name: 'read_url', necessity: 'optional'},
+     {name: 'workspace', necessity: 'optional'},
+     {name: 'python_exec', necessity: 'optional'},
+     {name: 'android_document', necessity: 'optional'},
 diff --git a/src/store/PalStore.ts b/src/store/PalStore.ts
 --- a/src/store/PalStore.ts
 +++ b/src/store/PalStore.ts
-@@ -816,7 +816,7 @@ class PalStore {
+@@ -55,8 +55,12 @@ import {downloadPalThumbnail, deletePalThumbnail} from '../utils/imageUtils';
+ const LOOKIE_SEEDED_KEY = 'PalStore.builtin.Lookie.seeded';
+ const JARVIS_SEEDED_KEY = 'PalStore.builtin.Jarvis.seeded';
+ const JARVIS_TOOLS_V07_KEY = 'PalStore.builtin.Jarvis.tools.v07';
+ const JARVIS_TOOLS_V08_KEY = 'PalStore.builtin.Jarvis.tools.v08';
+-const JARVIS_FILE_TALENTS = ['workspace', 'python_exec', 'android_document'].map(name => ({name, necessity: 'optional' as const}));
++const JARVIS_TOOLS_V09_KEY = 'PalStore.builtin.Jarvis.tools.v09';
++const JARVIS_FILE_TALENTS = ['web_search', 'read_url', 'workspace', 'python_exec', 'android_document'].map(name => ({name, necessity: 'optional' as const}));
+ const JARVIS_ID_KEY = 'PalStore.builtin.Jarvis.id';
++const JARVIS_SYSTEM_PROMPT =
++  "You are Jarvis, AuthorChe's private pocket AI. Reply in the user's language, with Ukrainian as the default. Operate as an agent, not a code-only chatbot. For current or external facts, use web_search first and read_url for important sources; never claim you searched if the tool failed. For an image, PDF, DOCX, HTML page, source file, report or other artifact, use the available workspace/python tools to create the actual file and return the resulting artifact in chat instead of merely printing implementation code. Use Android document tools to read user-selected files and offline ZIM evidence when relevant. Clearly mark offline knowledge as potentially outdated. Never claim a photorealistic AI image was generated unless a real image-generation model produced it.";
+ 
+ class PalStore {
+@@ -797,17 +801,22 @@ class PalStore {
+   private async initializeJarvisPal(force = false): Promise<void> {
+     try {
+       if (!force && (await AsyncStorage.getItem(JARVIS_SEEDED_KEY)) === 'true' &&
+-          (await AsyncStorage.getItem(JARVIS_TOOLS_V08_KEY)) === 'true') {
++          (await AsyncStorage.getItem(JARVIS_TOOLS_V09_KEY)) === 'true') {
+         return;
+       }
+ 
+       const existing = await this.findJarvisPal();
+       if (existing) {
+         await AsyncStorage.setItem(JARVIS_ID_KEY, existing.id);
+-        if (await AsyncStorage.getItem(JARVIS_TOOLS_V08_KEY) !== 'true') {
+-          await this.updatePal(existing.id, {pact: {talents: JARVIS_FILE_TALENTS}});
+-          await AsyncStorage.setItem(JARVIS_TOOLS_V08_KEY, 'true');
++        if (await AsyncStorage.getItem(JARVIS_TOOLS_V09_KEY) !== 'true') {
++          await this.updatePal(existing.id, {
++            pact: {talents: JARVIS_FILE_TALENTS},
++            ...(!existing.isSystemPromptChanged ? {systemPrompt: JARVIS_SYSTEM_PROMPT} : {}),
++          });
++          await AsyncStorage.setItem(JARVIS_TOOLS_V09_KEY, 'true');
+         }
+         await AsyncStorage.setItem(JARVIS_SEEDED_KEY, 'true');
+         return;
+@@ -817,9 +826,9 @@ class PalStore {
          name: 'Jarvis',
-         description: 'A private multilingual AI agent that runs locally on your phone.',
-         systemPrompt:
--          "You are Jarvis, AuthorChe's private pocket AI. Reply in the user's language, with Ukrainian as the default. Use the supplied offline or web evidence accurately, cite article titles or source URLs, and never claim to control Android. Say if an archive may be outdated.",
-+          "You are Jarvis, AuthorChe's private pocket AI. Reply in the user's language, with Ukrainian as the default. Operate as an agent, not a code-only chatbot. For current or external facts, use web_search first and read_url for important sources; never claim you searched if the tool failed. For an image, PDF, DOCX, HTML page, source file, report or other artifact, use the available workspace/python tools to create the actual file and return the resulting artifact in chat instead of merely printing implementation code. Use Android document tools to read user-selected files and offline ZIM evidence when relevant. Clearly mark offline knowledge as potentially outdated. Never claim a photorealistic AI image was generated unless a real image-generation model produced it.",
+         description:
+           'A private multilingual pocket AI with offline knowledge.',
+-        systemPrompt:
+-          "You are Jarvis, a private pocket AI. Reply in the user's language, with Ukrainian as the default. Use supplied offline encyclopedia excerpts and web evidence accurately, citing article titles or URLs. Never claim to have performed Android actions. Say when an archive may be outdated. Be concise and clear.",
++        systemPrompt: JARVIS_SYSTEM_PROMPT,
          isSystemPromptChanged: false,
          useAIPrompt: false,
          defaultModel: undefined,
+@@ -835,6 +844,7 @@ class PalStore {
+       await AsyncStorage.setItem(JARVIS_ID_KEY, created.id);
+       await AsyncStorage.setItem(JARVIS_SEEDED_KEY, 'true');
+       await AsyncStorage.setItem(JARVIS_TOOLS_V07_KEY, 'true');
+       await AsyncStorage.setItem(JARVIS_TOOLS_V08_KEY, 'true');
++      await AsyncStorage.setItem(JARVIS_TOOLS_V09_KEY, 'true');
+     } catch (error) {
+       console.error('Error initializing Jarvis agent:', error);
+     }
+@@ -401,7 +411,7 @@ describe('PalStore', () => {
+       // observed objects in Proxies, so Object.is equality is brittle;
+       // value equality verifies the field wasn't cleared or rewritten).
+       expect(jarvis?.defaultModel).toEqual(boundModel);
+-      expect(jarvis?.pact?.talents?.map(t => t.name)).toEqual(['workspace', 'python_exec', 'android_document']);
++      expect(jarvis?.pact?.talents?.map(t => t.name)).toEqual(['web_search', 'read_url', 'workspace', 'python_exec', 'android_document']);
+       expect(palRepository.createPal).not.toHaveBeenCalled();
+     });
