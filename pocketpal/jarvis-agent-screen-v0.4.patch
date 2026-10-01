@@ -142,7 +142,7 @@ new file mode 100644
 +
 +  @ReactMethod fun openText(promise: Promise) {
 +    if (pending != null) { promise.reject("PICKER_BUSY", "File picker already open"); return }
-+    val activity = currentActivity ?: run { promise.reject("NO_ACTIVITY", "Android activity unavailable"); return }
++    val activity = context.currentActivity ?: run { promise.reject("NO_ACTIVITY", "Android activity unavailable"); return }
 +    pending = promise
 +    try {
 +      val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -225,9 +225,10 @@ diff --git a/android/app/src/main/java/top/authorche/agent/ShizukuModule.kt b/an
 new file mode 100644
 --- /dev/null
 +++ b/android/app/src/main/java/top/authorche/agent/ShizukuModule.kt
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,74 @@
 +package top.authorche.agent
 +
++import com.pocketpal.BuildConfig
 +import android.content.ComponentName
 +import android.content.ServiceConnection
 +import android.content.pm.PackageManager
