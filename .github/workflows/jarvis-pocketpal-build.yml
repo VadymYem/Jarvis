@@ -62,6 +62,8 @@ jobs:
           git apply ../pocketpal/jarvis-knowledge-reader-fix.patch
           git apply --check ../pocketpal/jarvis-files-python-v0.8.patch
           git apply ../pocketpal/jarvis-files-python-v0.8.patch
+          git apply --check ../pocketpal/jarvis-remove-screen-module.patch
+          git apply ../pocketpal/jarvis-remove-screen-module.patch
           git diff --check
 
       - name: Add Jarvis badge to launcher artwork
