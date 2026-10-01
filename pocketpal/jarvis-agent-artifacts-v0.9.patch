@@ -791,7 +791,7 @@ diff --git a/android/app/src/main/python/jarvis_artifacts.py b/android/app/src/m
 new file mode 100644
 --- /dev/null
 +++ b/android/app/src/main/python/jarvis_artifacts.py
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,176 @@
 +"""Artifact helpers intended for model-generated Jarvis Python scripts."""
 +
 +from pathlib import Path
@@ -898,6 +898,33 @@ new file mode 100644
 +        y += int(font.size * 0.55)
 +    pages.append(image)
 +    pages[0].save(target, "PDF", resolution=150.0, save_all=True, append_images=pages[1:])
++    return str(target)
++
++
++def create_doc(path, text, title=""):
++    """Create a Word-compatible legacy .doc as RTF with Unicode escapes."""
++    target = _target(path)
++    if target.suffix.lower() != ".doc":
++        target = target.with_suffix(".doc")
++    def rtf_escape(value):
++        out = []
++        for ch in str(value):
++            code = ord(ch)
++            if ch in "\\\{\}":
++                out.append("\\" + ch)
++            elif 32 <= code < 127:
++                out.append(ch)
++            else:
++                signed = code if code < 32768 else code - 65536
++                out.append("\\u" + str(signed) + "?")
++        return "".join(out)
++    blocks = []
++    if title:
++        blocks.append("\\b\\fs36 " + rtf_escape(title) + "\\b0\\fs24\\par")
++    for paragraph in str(text).splitlines():
++        blocks.append(rtf_escape(paragraph) + "\\par")
++    payload = "{\\rtf1\\ansi\\deff0\\uc1\\fs24 " + "\n".join(blocks) + "}"
++    target.write_text(payload, encoding="ascii")
 +    return str(target)
 +
 +
@@ -1300,7 +1327,7 @@ diff --git a/src/agent/talents/PythonExecEngine.ts b/src/agent/talents/PythonExe
 +    return [
 +      'ARTIFACT EXECUTION CONTRACT:',
 +      'When the user asks to create an image, PDF, DOCX, HTML, source file, report, chart, card or other downloadable artifact, do not merely print Python or describe how to make it. Call python_exec and actually write the requested file into the current Jarvis workspace.',
-+      'For PDF and DOCX, prefer: from jarvis_artifacts import create_pdf, create_docx. For simple visual cards use create_card; for charts and custom raster graphics use Pillow directly. Use UTF-8 and Ukrainian-capable Noto/Roboto system fonts.',
++      'For PDF, legacy DOC and DOCX, prefer: from jarvis_artifacts import create_pdf, create_doc, create_docx. For simple visual cards use create_card; for charts and custom raster graphics use Pillow directly. Use UTF-8 and Ukrainian-capable Noto/Roboto system fonts.',
 +      'After the tool returns Created artifacts, answer briefly and refer to the real artifact shown in chat. Do not paste the implementation code unless the user explicitly asks for code.',
 +      'Python/Pillow can create designed graphics, charts, diagrams and composited images; it is not a diffusion model. Never claim a photorealistic AI image was synthesized unless a real image-generation model/tool actually produced it.',
 +      'Keep generated paths relative, descriptive and with the correct extension. Reuse or update files when the user requests revisions.',
@@ -1880,3 +1907,48 @@ diff --git a/src/store/PalStore.ts b/src/store/PalStore.ts
      } catch (error) {
        console.error('Error initializing Jarvis agent:', error);
      }
+
+diff --git a/src/agent/talents/AndroidDocumentEngine.ts b/src/agent/talents/AndroidDocumentEngine.ts
+--- a/src/agent/talents/AndroidDocumentEngine.ts
++++ b/src/agent/talents/AndroidDocumentEngine.ts
+@@ -1,5 +1,5 @@
+ import {Alert} from 'react-native';
+-import type {TalentEngine, TalentResult, ToolDefinition} from '../../services/talents/types';
++import type {TalentEngine, TalentResult, ToolDefinition, SystemPromptContext} from '../../services/talents/types';
+ import {androidDocuments} from '../native/AndroidDocuments';
+ 
+ const confirm = (title: string, detail: string): Promise<boolean> => new Promise(resolve => {
+@@ -38,10 +39,18 @@ export class AndroidDocumentEngine implements TalentEngine {
+       return {type: 'error', summary: message, errorMessage: message};
+     }
+   }
++  systemPromptFragment(_ctx: SystemPromptContext): string {
++    return [
++      'android_document opens user-selected Android documents and extracts text locally.',
++      'Supported inputs include TXT/Markdown/source code/HTML/JSON/XML/CSV, PDF with extractable text, DOC/DOCX, RTF, ODT, PPTX and XLSX.',
++      'For an uploaded-looking request such as "analyze this PDF" or "work with my document", call pick_read so Android shows the system file picker. Never ask the user to paste the document manually when this tool is available.',
++      'Scanned image-only PDFs may have no extractable text because OCR is not bundled.',
++    ].join(' ');
++  }
+   toToolDefinition(): ToolDefinition {
+     return {type: 'function', function: {
+       name: this.name,
+-      description: 'Open Android system file picker and read text files chosen by the user; write only to a previously chosen document after confirmation.',
++      description: 'Open Android system file picker and locally parse TXT/code/HTML/PDF/DOC/DOCX/RTF/ODT/PPTX/XLSX files chosen by the user; write plain-text formats only to a previously chosen document after confirmation.',
+       parameters: {type: 'object', additionalProperties: false, required: ['operation'], properties: {
+         operation: {type: 'string', enum: ['pick_read', 'read', 'write']},
+         uri: {type: 'string', description: 'content:// URI from the picker'},
+diff --git a/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx b/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx
+--- a/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx
++++ b/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx
+@@ -24,8 +24,8 @@ export const OfflineKnowledgeCard: React.FC = () => {
+     <Card.Title title="Офлайн-бібліотека" />
+     <Card.Content style={{gap: 8, paddingBottom: 16}}>
+       <Text variant="bodyMedium">{archive.ready ? `Підключено: ${archive.name}` : 'Підключіть архів Wikipedia у форматі ZIM. Після цього Jarvis шукатиме в ньому автоматично без інтернету.'}</Text>
+-      <Text variant="bodySmall">Для всієї Вікіпедії оберіть повний архів Wikipedia ZIM (наприклад, ukwiki або enwiki з позначкою nopic чи maxi). Версія mini містить лише частину статей. Завантажте архів із каталогу Kiwix, залиште його у пам’яті телефону й оберіть файл нижче; повний архів може займати десятки гігабайтів.</Text>
+-      <Button mode="contained-tonal" onPress={choose}>Обрати файл ZIM</Button>
++      <Text variant="bodySmall">Можна додати кілька .zim архівів — жорсткого ліміту кількості немає, межа визначається вільною пам’яттю пристрою. Jarvis копіює вибраний ZIM у власне сховище, щоб libzim отримував справжній файловий шлях замість /dev/fd. Тому для імпорту тимчасово потрібне місце приблизно під ще одну копію архіву.</Text>
++      <Button mode="contained-tonal" onPress={choose}>{archive.ready ? 'Додати ще ZIM' : 'Додати ZIM'}</Button>
+       <Button mode="text" onPress={() => Linking.openURL('https://library.kiwix.org/#lang=uk')}>Відкрити каталог Kiwix</Button>
+       {archive.ready && <Button mode="text" onPress={forget}>Відключити архів</Button>}
+       {!!message && <Text variant="bodySmall" selectable>{message}</Text>}
