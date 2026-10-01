@@ -2031,3 +2031,85 @@ diff --git a/src/services/talents/index.ts b/src/services/talents/index.ts
      getResultCount: () => searchProviderStore.resultCount,
      readWithDefaultReader,
    };
+diff --git a/src/services/talents/searchAccess.ts b/src/services/talents/searchAccess.ts
+--- a/src/services/talents/searchAccess.ts
++++ b/src/services/talents/searchAccess.ts
+@@ -10,8 +10,14 @@ export interface SearchAccess {
+    * Consent is enforced here, not just in the Settings UI.
+    */
+   canSearch(): boolean;
++  /**
++   * Optional interactive first-use gate. App wiring can ask the user for
++   * consent at the moment an agent actually tries to search.
++   */
++  requestConsent?(): Promise<boolean>;
+   getResultCount(): number;
+   readWithDefaultReader(url: string): Promise<PageContent>;
+ }
+diff --git a/src/services/talents/WebSearchEngine.ts b/src/services/talents/WebSearchEngine.ts
+--- a/src/services/talents/WebSearchEngine.ts
++++ b/src/services/talents/WebSearchEngine.ts
+@@ -50,15 +50,21 @@ export class WebSearchEngine implements TalentEngine {
+     }
+ 
+     if (!this.access.canSearch()) {
+-      const provider = this.access.getActiveProvider();
+-      return {
+-        type: 'error',
+-        summary: `web_search: ${provider.id} not enabled`,
+-        errorMessage: `Internet search is not enabled. Accept the disclosure and configure ${provider.id} in Settings → Internet Search.`,
+-      };
++      const providerBeforeConsent = this.access.getActiveProvider();
++      const granted = this.access.requestConsent
++        ? await this.access.requestConsent()
++        : false;
++      if (!granted || !this.access.canSearch()) {
++        return {
++          type: 'error',
++          summary: `web_search: ${providerBeforeConsent.id} not enabled`,
++          errorMessage:
++            `Internet search is not enabled. Allow network search when prompted or configure ${providerBeforeConsent.id} in Settings → Internet Search.`,
++        };
++      }
+     }
+ 
+     const provider = this.access.getActiveProvider();
+     const maxResults = this.access.getResultCount();
+diff --git a/src/services/talents/index.ts b/src/services/talents/index.ts
+--- a/src/services/talents/index.ts
++++ b/src/services/talents/index.ts
+@@ -1,3 +1,4 @@
++import {Alert} from 'react-native';
+ import {RenderHtmlEngine} from './RenderHtmlEngine';
+ import {CalculateEngine} from './CalculateEngine';
+ import {DatetimeEngine} from './DatetimeEngine';
+@@ -47,7 +48,27 @@ function createSearchAccess(): SearchAccess {
+       return createSearchProvider(id, () => searchProviderStore.getKey(id));
+     },
+     canSearch: () => searchProviderStore.canSearch,
++    requestConsent: () => {
++      if (searchProviderStore.hasConsentedToSearch) {
++        return Promise.resolve(true);
++      }
++      const provider = searchProviderStore.activeProviderId;
++      return new Promise<boolean>(resolve => {
++        Alert.alert(
++          'Дозволити пошук в інтернеті?',
++          `Jarvis надсилатиме ваш пошуковий запит до провайдера ${provider}. Для Device Web API-ключ не потрібен. Дозвіл можна змінити в Settings → Internet Search.`,
++          [
++            {text: 'Не дозволяти', style: 'cancel', onPress: () => resolve(false)},
++            {
++              text: 'Дозволити',
++              onPress: () => {
++                searchProviderStore.setConsent(true);
++                resolve(true);
++              },
++            },
++          ],
++          {cancelable: false},
++        );
++      });
++    },
+     getResultCount: () => searchProviderStore.resultCount,
+     readWithDefaultReader,
+   };
