@@ -954,7 +954,7 @@ index 0ce0151..cbc0014 100644
        // observed objects in Proxies, so Object.is equality is brittle;
        // value equality verifies the field wasn't cleared or rewritten).
        expect(jarvis?.defaultModel).toEqual(boundModel);
-+      expect(jarvis?.pact?.talents?.map(t => t.name)).toEqual(['workspace', 'python_exec', 'android_document']);
++      expect(jarvis?.pact?.talents?.map(t => t.name)).toEqual(['web_search', 'read_url', 'workspace', 'python_exec', 'android_document']);
        expect(palRepository.createPal).not.toHaveBeenCalled();
      });
  
