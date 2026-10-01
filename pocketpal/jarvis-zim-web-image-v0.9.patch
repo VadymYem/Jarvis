@@ -1,0 +1,665 @@
+diff --git a/android/app/build.gradle b/android/app/build.gradle
+index 136657d..28147a8 100644
+--- a/android/app/build.gradle
++++ b/android/app/build.gradle
+@@ -87,8 +87,8 @@ android {
+         applicationId "top.authorche.agent"
+         minSdkVersion rootProject.ext.minSdkVersion
+         targetSdkVersion rootProject.ext.targetSdkVersion
+-        versionCode 8
+-        versionName "0.8.0"
++        versionCode 9
++        versionName "0.9.0"
+         ndk {
+             abiFilters "arm64-v8a"
+         }
+diff --git a/android/app/src/main/java/top/authorche/agent/OfflineZimModule.kt b/android/app/src/main/java/top/authorche/agent/OfflineZimModule.kt
+index 6cbd23d..a396a8f 100644
+--- a/android/app/src/main/java/top/authorche/agent/OfflineZimModule.kt
++++ b/android/app/src/main/java/top/authorche/agent/OfflineZimModule.kt
+@@ -12,18 +12,54 @@ import com.facebook.react.bridge.Promise
+ import com.facebook.react.bridge.ReactApplicationContext
+ import com.facebook.react.bridge.ReactContextBaseJavaModule
+ import com.facebook.react.bridge.ReactMethod
++import com.facebook.react.bridge.WritableArray
++import com.facebook.react.bridge.WritableMap
++import org.json.JSONArray
++import org.json.JSONObject
+ import org.kiwix.libkiwix.JNIKiwix
+ import org.kiwix.libzim.Archive
+ import org.kiwix.libzim.Query
+ import org.kiwix.libzim.Searcher
++import java.io.File
++import java.util.UUID
+ import java.util.concurrent.Executors
+ 
+-/** Searches an explicitly selected, persisted ZIM archive without uploading it. */
++/** Copies provider-backed ZIM files into app storage before passing a real path to libzim. */
+ class OfflineZimModule(private val context: ReactApplicationContext) : ReactContextBaseJavaModule(context) {
+   private val preferences = context.getSharedPreferences("jarvis_offline_zim", 0)
+   private val executor = Executors.newSingleThreadExecutor()
+   private var pending: Promise? = null
+   @Volatile private var libraryReady = false
++  private val archiveDir: File get() = File(context.getExternalFilesDir(null) ?: context.filesDir, "zim")
++
++  private data class Stored(val id: String, val name: String, val articles: Int, val bytes: Long) {
++    fun json() = JSONObject().put("id", id).put("name", name).put("articles", articles).put("bytes", bytes)
++    fun map(): WritableMap = Arguments.createMap().apply {
++      putString("id", id); putString("name", name); putInt("articles", articles); putDouble("bytes", bytes.toDouble())
++    }
++  }
++
++  private fun list(): List<Stored> {
++    val array = JSONArray(preferences.getString("archives", "[]") ?: "[]")
++    return (0 until array.length()).mapNotNull { index ->
++      val row = array.optJSONObject(index) ?: return@mapNotNull null
++      val id = row.optString("id")
++      if (!Regex("[a-f0-9-]{36}").matches(id)) return@mapNotNull null
++      Stored(id, row.optString("name"), row.optInt("articles"), row.optLong("bytes"))
++    }
++  }
++  private fun file(row: Stored) = File(archiveDir, "${row.id}.zim")
++  private fun save(rows: List<Stored>) {
++    val array = JSONArray()
++    rows.forEach { array.put(it.json()) }
++    check(preferences.edit().putString("archives", array.toString()).commit()) { "Не вдалося зберегти список архівів" }
++  }
++  private fun state(rows: List<Stored>): WritableMap = Arguments.createMap().apply {
++    val available = rows.filter { file(it).isFile }
++    putBoolean("ready", available.isNotEmpty())
++    putArray("archives", Arguments.createArray().also { array -> available.forEach { array.pushMap(it.map()) } })
++    putInt("limit", MAX_ARCHIVES)
++  }
+ 
+   private val listener: ActivityEventListener = object : BaseActivityEventListener() {
+     override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
+@@ -33,17 +69,32 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
+       if (resultCode != Activity.RESULT_OK || data?.data == null) { promise.resolve(null); return }
+       val uri = data.data!!
+       executor.execute {
++        var temp: File? = null
+         try {
++          val rows = list()
++          require(rows.size < MAX_ARCHIVES) { "Ліміт: $MAX_ARCHIVES архівів. Видаліть один перед імпортом." }
+           val name = displayName(uri)
+           require(name.endsWith(".zim", ignoreCase = true)) { "Виберіть файл .zim із бібліотеки Kiwix." }
+-          context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+-          val info = inspect(uri)
+-          val old = preferences.getString("uri", null)
+-          preferences.edit().putString("uri", uri.toString()).putString("name", name)
+-            .putInt("articles", info.getInt("articles")).apply()
+-          if (old != null && old != uri.toString()) release(Uri.parse(old))
+-          promise.resolve(info)
++          check(archiveDir.isDirectory || archiveDir.mkdirs()) { "Не вдалося створити папку для ZIM" }
++          archiveDir.listFiles()?.filter { it.name.endsWith(".partial.zim") }?.forEach { it.delete() }
++          val expected = context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use {
++            if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else -1L
++          } ?: -1L
++          if (expected > 0 && expected > archiveDir.usableSpace - 16L * 1024 * 1024) {
++            error("Бракує вільного місця: для імпорту потрібна копія архіву ($expected байтів).")
++          }
++          val id = UUID.randomUUID().toString()
++          temp = File(archiveDir, "$id.partial.zim")
++          val input = context.contentResolver.openInputStream(uri) ?: error("Не вдалося прочитати вибраний ZIM")
++          input.use { source -> temp!!.outputStream().buffered().use { destination -> source.copyTo(destination, 1024 * 1024) } }
++          if (expected > 0 && temp!!.length() != expected) error("Копіювання архіву не завершено. Перевірте вільне місце.")
++          val imported = Stored(id, name, withArchive(temp!!) { it.articleCount }, temp!!.length())
++          check(temp!!.renameTo(file(imported))) { "Не вдалося завершити імпорт ZIM" }
++          temp = null
++          try { save(rows + imported) } catch (error: Exception) { file(imported).delete(); throw error }
++          promise.resolve(state(rows + imported))
+         } catch (error: Exception) { promise.reject("ZIM_IMPORT", error.message, error) }
++        finally { temp?.delete() }
+       }
+     }
+   }
+@@ -59,108 +110,97 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
+       val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+         addCategory(Intent.CATEGORY_OPENABLE)
+         type = "*/*"
+-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
++        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+       }
+       activity.startActivityForResult(intent, PICK_ZIM)
+     } catch (error: Exception) { pending = null; promise.reject("ZIM_PICKER", error.message, error) }
+   }
+ 
+   @ReactMethod fun status(promise: Promise) {
+-    val uri = preferences.getString("uri", null)
+-    promise.resolve(Arguments.createMap().apply {
+-      putBoolean("ready", uri != null && context.contentResolver.persistedUriPermissions.any { it.uri.toString() == uri && it.isReadPermission })
+-      putString("name", preferences.getString("name", null))
+-      putInt("articles", preferences.getInt("articles", 0))
+-    })
++    executor.execute { try { promise.resolve(state(list())) } catch (error: Exception) { promise.reject("ZIM_STATUS", error.message, error) } }
+   }
+ 
+-  @ReactMethod fun forgetArchive(promise: Promise) {
+-    val old = preferences.getString("uri", null)
+-    preferences.edit().clear().apply()
+-    if (old != null) release(Uri.parse(old))
+-    promise.resolve(null)
++  @ReactMethod fun removeArchive(id: String, promise: Promise) {
++    executor.execute {
++      try {
++        val rows = list()
++        val selected = rows.find { it.id == id } ?: error("Архів не знайдено")
++        save(rows - selected)
++        if (file(selected).exists() && !file(selected).delete()) error("Не вдалося видалити файл архіву")
++        promise.resolve(state(rows - selected))
++      } catch (error: Exception) { promise.reject("ZIM_REMOVE", error.message, error) }
++    }
+   }
+ 
+   @ReactMethod fun search(query: String, limit: Double, promise: Promise) {
+-    val uriText = preferences.getString("uri", null)
+-    if (uriText == null) { promise.resolve(Arguments.createArray()); return }
+     executor.execute {
+       try {
+-        val uri = Uri.parse(uriText)
+-        require(context.contentResolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission }) { "Доступ до ZIM відкликано. Оберіть файл знову." }
+         val rows = Arguments.createArray()
+-        withArchive(uri) { archive ->
+-          val searcher = Searcher(archive)
+-          try {
+-            val request = Query(query.trim().take(180))
++        val max = limit.toInt().coerceIn(1, 5)
++        val perArchive = mutableListOf<List<WritableMap>>()
++        for (stored in list()) {
++          val archiveFile = file(stored)
++          if (!archiveFile.isFile) continue
++          val found = mutableListOf<WritableMap>()
++          withArchive(archiveFile) { archive ->
++            val searcher = Searcher(archive)
+             try {
+-              val search = searcher.search(request)
++              val request = Query(query.trim().take(180))
+               try {
+-                val iterator = search.getResults(0, limit.toInt().coerceIn(1, 5))
++                val search = searcher.search(request)
+                 try {
+-            var count = 0
+-            while (iterator.hasNext() && count < limit.toInt().coerceIn(1, 5)) {
+-              val title = iterator.title ?: break
+-              val path = iterator.path ?: ""
+-              val snippet = Html.fromHtml(iterator.snippet ?: "", Html.FROM_HTML_MODE_COMPACT).toString().trim().take(450)
+-              val excerpt = try {
+-                val item = archive.getEntryByPath(path).getItem(true)
+-                if (item.size in 1L..250_000L && item.mimetype.startsWith("text/html")) {
+-                  val blob = item.data
++                  val iterator = search.getResults(0, max)
+                   try {
+-                    Html.fromHtml(blob.data.toString(Charsets.UTF_8), Html.FROM_HTML_MODE_COMPACT)
+-                      .toString().replace(Regex("\\s+"), " ").trim().take(1500)
+-                  } finally { blob.dispose() }
+-                } else snippet
+-              } catch (_: Exception) { snippet }
+-              rows.pushMap(Arguments.createMap().apply {
+-                putString("title", title)
+-                putString("path", path)
+-                putString("excerpt", excerpt.ifBlank { snippet })
+-                putString("archive", preferences.getString("name", "ZIM"))
+-              })
+-              iterator.next()
+-              count++
+-            }
+-                } finally { iterator.dispose() }
+-              } finally { search.dispose() }
+-            } finally { request.dispose() }
+-          } finally { searcher.dispose() }
++                    while (iterator.hasNext() && found.size < max) {
++                      val title = iterator.title ?: break
++                      val path = iterator.path ?: ""
++                      val snippet = Html.fromHtml(iterator.snippet ?: "", Html.FROM_HTML_MODE_COMPACT).toString().trim().take(450)
++                      val excerpt = try {
++                        val item = archive.getEntryByPath(path).getItem(true)
++                        if (item.size in 1L..250_000L && item.mimetype.startsWith("text/html")) {
++                          val blob = item.data
++                          try { Html.fromHtml(blob.data.toString(Charsets.UTF_8), Html.FROM_HTML_MODE_COMPACT)
++                            .toString().replace(Regex("\\s+"), " ").trim().take(1500) }
++                          finally { blob.dispose() }
++                        } else snippet
++                      } catch (_: Exception) { snippet }
++                      found.add(Arguments.createMap().apply {
++                        putString("title", title); putString("path", path)
++                        putString("excerpt", excerpt.ifBlank { snippet }); putString("archive", stored.name)
++                      })
++                      iterator.next()
++                    }
++                  } finally { iterator.dispose() }
++                } finally { search.dispose() }
++              } finally { request.dispose() }
++            } finally { searcher.dispose() }
++          }
++          perArchive.add(found)
++        }
++        // Interleave archives so one large index cannot hide the others.
++        var count = 0
++        for (rank in 0 until max) {
++          for (found in perArchive) {
++            if (rank < found.size && count < max) { rows.pushMap(found[rank]); count++ }
++          }
+         }
+         promise.resolve(rows)
+       } catch (error: Exception) { promise.reject("ZIM_SEARCH", error.message, error) }
+     }
+   }
+ 
+-  private fun inspect(uri: Uri): com.facebook.react.bridge.WritableMap = withArchive(uri) { archive ->
+-    Arguments.createMap().apply {
+-      putBoolean("ready", true)
+-      putString("name", displayName(uri))
+-      putInt("articles", archive.articleCount)
+-    }
+-  }
+-
+-  private fun <T> withArchive(uri: Uri, block: (Archive) -> T): T {
++  private fun <T> withArchive(path: File, block: (Archive) -> T): T {
+     if (!libraryReady) synchronized(this) {
+       if (!libraryReady) { JNIKiwix(context); libraryReady = true }
+     }
+-    val descriptor = context.contentResolver.openFileDescriptor(uri, "r")
+-      ?: error("Неможливо відкрити ZIM. Перемістіть архів у пам’ять телефону.")
+-    return descriptor.use {
+-      val archive = Archive(it.fileDescriptor)
+-      try { block(archive) } finally { archive.dispose() }
+-    }
++    val archive = Archive(path.absolutePath)
++    try { return block(archive) } finally { archive.dispose() }
+   }
+ 
+   private fun displayName(uri: Uri): String = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+     if (it.moveToFirst()) it.getString(0) else null
+   } ?: (uri.lastPathSegment ?: "archive.zim")
+ 
+-  private fun release(uri: Uri) {
+-    try { context.contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+-    catch (_: Exception) { /* The grant may already have been revoked in Android settings. */ }
+-  }
+-
+   override fun invalidate() {
+     context.removeActivityEventListener(listener)
+     pending?.reject("ZIM_CLOSED", "Archive picker closed")
+@@ -169,5 +209,5 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
+     super.invalidate()
+   }
+ 
+-  companion object { private const val PICK_ZIM = 9254 }
++  companion object { private const val PICK_ZIM = 9254; private const val MAX_ARCHIVES = 8 }
+ }
+diff --git a/android/app/src/main/python/jarvis_runner.py b/android/app/src/main/python/jarvis_runner.py
+index 3d2f889..60a330b 100644
+--- a/android/app/src/main/python/jarvis_runner.py
++++ b/android/app/src/main/python/jarvis_runner.py
+@@ -20,7 +20,8 @@ class _LimitedOutput(io.StringIO):
+ def run(code, workspace):
+     root = Path(workspace).resolve()
+     root.mkdir(parents=True, exist_ok=True)
+-    before = {str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()}
++    before = {str(p.relative_to(root)): (p.stat().st_mtime_ns, p.stat().st_size)
++              for p in root.rglob("*") if p.is_file()}
+     stdout, stderr = _LimitedOutput(), _LimitedOutput()
+     old_cwd, old_argv, old_trace = os.getcwd(), sys.argv, sys.gettrace()
+     deadline = time.monotonic() + 15
+@@ -49,7 +50,7 @@ def run(code, workspace):
+ 
+     created = []
+     for path in root.rglob("*"):
+-        if path.is_file() and str(path.relative_to(root)) not in before:
++        if path.is_file() and (path.stat().st_mtime_ns, path.stat().st_size) != before.get(str(path.relative_to(root))):
+             created.append(str(path.relative_to(root)))
+             if len(created) >= 40:
+                 break
+diff --git a/src/agent/talents/PythonExecEngine.ts b/src/agent/talents/PythonExecEngine.ts
+index f302999..5237379 100644
+--- a/src/agent/talents/PythonExecEngine.ts
++++ b/src/agent/talents/PythonExecEngine.ts
+@@ -55,6 +55,10 @@ export class PythonExecEngine implements TalentEngine {
+       if (result.error) {
+         return {type: 'error', summary: output, errorMessage: output};
+       }
++      const images = result.created?.filter(path => /\.(png|jpe?g|webp|gif)$/i.test(path));
++      if (images?.length) {
++        return {type: 'image', imageUri: `file://${run.workspace}/${images[0]}`, summary: output};
++      }
+       return {type: 'text', summary: output || 'Python completed without output.'};
+     } catch (error) {
+       const message = error instanceof Error ? error.message : String(error);
+diff --git a/src/components/MarkdownView/CodeRenderer.tsx b/src/components/MarkdownView/CodeRenderer.tsx
+index c51ba43..bdd769b 100644
+--- a/src/components/MarkdownView/CodeRenderer.tsx
++++ b/src/components/MarkdownView/CodeRenderer.tsx
+@@ -1,5 +1,8 @@
+ import React from 'react';
+-import {View} from 'react-native';
++import {Image, Text, View} from 'react-native';
++import {Button} from 'react-native-paper';
++import {PythonExecEngine} from '../../agent/talents/PythonExecEngine';
++import type {TalentResult} from '../../services/talents/types';
+ 
+ import CodeHighlighter from 'react-native-code-highlighter';
+ import {atomOneDark} from 'react-syntax-highlighter/dist/esm/styles/hljs';
+@@ -42,6 +45,8 @@ function decodeHTMLEntities(text: string): string {
+  */
+ export const CodeRenderer = ({TDefaultRenderer, ...props}: any) => {
+   const theme = useTheme();
++  const [pythonResult, setPythonResult] = React.useState<TalentResult | null>(null);
++  const [running, setRunning] = React.useState(false);
+   const styles = createStyles(theme);
+   const isCodeBlock = props?.tnode?.parent?.tagName === 'pre';
+   if (!isCodeBlock) {
+@@ -74,6 +79,18 @@ export const CodeRenderer = ({TDefaultRenderer, ...props}: any) => {
+         customStyle={codeHighlighterPreOverride}>
+         {content}
+       </CodeHighlighter>
++      {/^(python|py)$/i.test(language) && (
++        <Button disabled={running} loading={running} onPress={async () => {
++          setRunning(true);
++          try { setPythonResult(await new PythonExecEngine().execute({code: content})); }
++          finally { setRunning(false); }
++        }}>Запустити Python і показати результат</Button>
++      )}
++      {pythonResult?.type === 'image' && (
++        <Image source={{uri: pythonResult.imageUri}} resizeMode="contain"
++          style={{width: 280, height: 280, maxWidth: '100%'}} />
++      )}
++      {!!pythonResult && <Text selectable>{pythonResult.summary}</Text>}
+     </View>
+   );
+ };
+diff --git a/src/components/TalentSurface/TalentSurface.tsx b/src/components/TalentSurface/TalentSurface.tsx
+index a5aa2f6..2400ea5 100644
+--- a/src/components/TalentSurface/TalentSurface.tsx
++++ b/src/components/TalentSurface/TalentSurface.tsx
+@@ -1,4 +1,5 @@
+ import React from 'react';
++import {Image, Text, View} from 'react-native';
+ 
+ import {talentUIRegistry} from '../../services/talents/TalentUIRegistry';
+ import {registerDefaultTalentUIs} from '../../services/talents/registerTalentUIs';
+@@ -64,6 +65,16 @@ export const TalentSurface: React.FC<TalentSurfaceProps> = ({step}) => {
+       continue;
+     }
+ 
++    if (name === 'python_exec' && outcome.result.type === 'image') {
++      rendered.push(
++        <View key={call.id} style={{padding: 10, gap: 8}} testID="python-created-image">
++          <Image source={{uri: outcome.result.imageUri}} resizeMode="contain" style={{width: 280, height: 280, maxWidth: '100%'}} />
++          <Text selectable>{outcome.result.summary}</Text>
++        </View>,
++      );
++      continue;
++    }
++
+     // 2. Registered talent UI for this tool name — render its result.
+     //    The metrics footer (post-hoc tokens + duration) renders as a
+     //    sibling beneath the result so each TalentUI can stay focused
+diff --git a/src/hooks/useChatSession.ts b/src/hooks/useChatSession.ts
+index c816e05..b6888c3 100644
+--- a/src/hooks/useChatSession.ts
++++ b/src/hooks/useChatSession.ts
+@@ -146,6 +146,10 @@ const prepareCompletion = async ({
+     maxToolTurns: DEFAULT_MAX_TURNS,
+   });
+   if (knowledgeEvidence) systemPromptFragments.push(wrapUntrusted(knowledgeEvidence));
++  if (sessionToolNames.includes('python_exec') &&
++      /(?:намалюй|створи|згенеруй|зроби|draw|create|generate)[^.!?]{0,90}(?:картин|зображен|малюн|графік|image|picture|plot)/i.test(message.text)) {
++    systemPromptFragments.push('For a requested drawing or chart, use python_exec to save a real PNG in the workspace (for example images/result.png) with Pillow or matplotlib. If tool calling is unavailable, provide one complete fenced ```python code block that saves a relative PNG file, so the user can run it with the button. Do not claim an image was made until Python has run.');
++  }
+ 
+   const messages = assembleMessages(systemMessages, systemPromptFragments, [
+     ...chatMessages,
+diff --git a/src/knowledge/offlineZim.ts b/src/knowledge/offlineZim.ts
+index c499ef8..6f6f2c9 100644
+--- a/src/knowledge/offlineZim.ts
++++ b/src/knowledge/offlineZim.ts
+@@ -7,31 +7,39 @@ export interface OfflineArticle {
+   archive: string;
+ }
+ 
++export interface StoredArchive {
++  id: string;
++  name: string;
++  articles: number;
++  bytes: number;
++}
++
+ export interface ArchiveStatus {
+   ready: boolean;
+-  name: string | null;
+-  articles?: number;
++  archives: StoredArchive[];
++  limit: number;
+ }
+ 
+ interface OfflineZimNative {
+   chooseArchive(): Promise<ArchiveStatus | null>;
+   status(): Promise<ArchiveStatus>;
+   search(query: string, limit: number): Promise<OfflineArticle[]>;
+-  forgetArchive(): Promise<void>;
++  removeArchive(id: string): Promise<ArchiveStatus>;
+ }
+ 
+ const native = Platform.OS === 'android'
+   ? NativeModules.OfflineZimModule as OfflineZimNative | undefined
+   : undefined;
++const empty: ArchiveStatus = {ready: false, archives: [], limit: 8};
+ 
+ export const offlineZim: OfflineZimNative = {
+   chooseArchive: () => native?.chooseArchive() ?? Promise.resolve(null),
+-  status: () => native?.status() ?? Promise.resolve({ready: false, name: null}),
++  status: () => native?.status() ?? Promise.resolve(empty),
+   search: (query, limit) => native?.search(query, limit) ?? Promise.resolve([]),
+-  forgetArchive: () => native?.forgetArchive() ?? Promise.resolve(),
++  removeArchive: id => native?.removeArchive(id) ?? Promise.resolve(empty),
+ };
+ 
+-/** Small-model context, selected by relevance using the archive's own index. */
++/** Small-model context, selected by relevance using the archives' own indexes. */
+ export const formatOfflineEvidence = (articles: OfflineArticle[]): string =>
+   articles.slice(0, 3).map((article, index) =>
+     `[${index + 1}] ${article.title} · ${article.archive} · ${article.path}\n${article.excerpt.slice(0, 1000)}`,
+diff --git a/src/knowledge/retrieve.ts b/src/knowledge/retrieve.ts
+index 96c959f..b4fc0c6 100644
+--- a/src/knowledge/retrieve.ts
++++ b/src/knowledge/retrieve.ts
+@@ -19,11 +19,15 @@ export const retrieveKnowledge = async (text: string): Promise<string> => {
+   const query = conciseQuery(text);
+   if (!query || query.length < 3 || query.length > 180) return '';
+   if (wantsWebSearch(text)) {
++    if (!searchProviderStore.canSearch) throw new Error('Дозвольте онлайн-пошук і налаштуйте провайдера в параметрах пошуку.');
+     const id = searchProviderStore.activeProviderId;
+     try {
+       const hits = await createSearchProvider(id, () => searchProviderStore.getKey(id)).search(query, {maxResults: 5});
+       if (!hits.length) throw new Error('Пошук не повернув результатів.');
+-      return 'Результати веб-пошуку, отримані зараз. Використовуй лише наведені факти й URL; якщо відповіді немає, скажи про це.\n' +
++      const encyclopediaOnly = hits.every(hit => hit.url.includes('.wikipedia.org/'));
++      return (encyclopediaOnly
++        ? 'Загальний веб-пошук недоступний. Результати онлайн-енциклопедії Wikipedia: це не перевірка поточних подій. Повідом користувачу про обмеження й не подавай ці дані як актуальні новини.\n'
++        : 'Результати веб-пошуку, отримані зараз. Використовуй лише наведені факти й URL; якщо відповіді немає, скажи про це.\n') +
+         hits.slice(0, 5).map(hit => `${hit.title}\n${hit.url}\n${hit.snippet.slice(0, 350)}`).join('\n\n');
+     } catch (error) {
+       const status = await offlineZim.status();
+diff --git a/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx b/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx
+index 22b5008..816aa28 100644
+--- a/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx
++++ b/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx
+@@ -1,33 +1,41 @@
+ import React from 'react';
+ import {Alert, Linking} from 'react-native';
+ import {Button, Card, Text} from 'react-native-paper';
+-import {offlineZim, type ArchiveStatus} from '../../knowledge/offlineZim';
++import {offlineZim, type ArchiveStatus, type StoredArchive} from '../../knowledge/offlineZim';
+ 
+ export const OfflineKnowledgeCard: React.FC = () => {
+-  const [archive, setArchive] = React.useState<ArchiveStatus>({ready: false, name: null});
++  const [status, setStatus] = React.useState<ArchiveStatus>({ready: false, archives: [], limit: 8});
++  const [busy, setBusy] = React.useState(false);
+   const [message, setMessage] = React.useState('');
+-  const refresh = React.useCallback(() => offlineZim.status().then(setArchive).catch(error => setMessage(String(error))), []);
++  const refresh = React.useCallback(() => offlineZim.status().then(setStatus).catch(error => setMessage(String(error))), []);
+   React.useEffect(() => { refresh(); }, [refresh]);
+ 
+   const choose = async () => {
++    setBusy(true);
++    setMessage('Копіювання і перевірка ZIM. Для великого архіву це може тривати кілька хвилин.');
+     try {
+       const result = await offlineZim.chooseArchive();
+-      if (result) { setArchive(result); setMessage(`Архів підключено: ${result.articles ?? '?'} статей.`); }
++      if (result) { setStatus(result); setMessage('Архів підключено.'); }
++      else setMessage('');
+     } catch (error) { setMessage(String(error)); }
++    finally { setBusy(false); }
+   };
+-  const forget = () => Alert.alert('Відключити архів?', 'Файл ZIM залишиться на телефоні.', [
++  const remove = (archive: StoredArchive) => Alert.alert('Видалити архів?', `Копію «${archive.name}» буде видалено зі сховища Jarvis. Оригінал залишиться на телефоні.`, [
+     {text: 'Скасувати', style: 'cancel'},
+-    {text: 'Відключити', onPress: () => offlineZim.forgetArchive().then(refresh).catch(error => setMessage(String(error)))},
++    {text: 'Видалити', style: 'destructive', onPress: () => offlineZim.removeArchive(archive.id).then(setStatus).catch(error => setMessage(String(error)))},
+   ]);
+ 
+   return <Card elevation={0} testID="offline-knowledge-card">
+     <Card.Title title="Офлайн-бібліотека" />
+     <Card.Content style={{gap: 8, paddingBottom: 16}}>
+-      <Text variant="bodyMedium">{archive.ready ? `Підключено: ${archive.name}` : 'Підключіть архів Wikipedia у форматі ZIM. Після цього Jarvis шукатиме в ньому автоматично без інтернету.'}</Text>
+-      <Text variant="bodySmall">Для всієї Вікіпедії оберіть повний архів Wikipedia ZIM (наприклад, ukwiki або enwiki з позначкою nopic чи maxi). Версія mini містить лише частину статей. Завантажте архів із каталогу Kiwix, залиште його у пам’яті телефону й оберіть файл нижче; повний архів може займати десятки гігабайтів.</Text>
+-      <Button mode="contained-tonal" onPress={choose}>Обрати файл ZIM</Button>
++      <Text variant="bodyMedium">{status.ready ? `Підключено архівів: ${status.archives.length}/${status.limit}` : 'Додайте архів Wikipedia ZIM. Jarvis шукатиме в ньому автоматично без інтернету.'}</Text>
++      <Text variant="bodySmall">Можна додати до {status.limit} архівів за наявності місця на телефоні. Для всієї Вікіпедії виберіть повний Wikipedia ZIM з каталогу Kiwix: mini містить лише частину статей. Під час імпорту Jarvis копіює файл у своє сховище, тож тимчасово потрібне місце і для оригіналу, і для копії. Видалення Jarvis видалить його копії.</Text>
++      {status.archives.map(archive => <React.Fragment key={archive.id}>
++        <Text variant="bodyMedium">{archive.name} · {archive.articles} статей · {(archive.bytes / (1024 ** 3)).toFixed(2)} ГБ</Text>
++        <Button mode="text" onPress={() => remove(archive)} disabled={busy}>Видалити цей архів</Button>
++      </React.Fragment>)}
++      <Button mode="contained-tonal" onPress={choose} disabled={busy || status.archives.length >= status.limit} loading={busy}>Додати файл ZIM</Button>
+       <Button mode="text" onPress={() => Linking.openURL('https://library.kiwix.org/#lang=uk')}>Відкрити каталог Kiwix</Button>
+-      {archive.ready && <Button mode="text" onPress={forget}>Відключити архів</Button>}
+       {!!message && <Text variant="bodySmall" selectable>{message}</Text>}
+     </Card.Content>
+   </Card>;
+diff --git a/src/screens/SettingsScreen/SettingsScreen.tsx b/src/screens/SettingsScreen/SettingsScreen.tsx
+index bcfba75..d332f78 100644
+--- a/src/screens/SettingsScreen/SettingsScreen.tsx
++++ b/src/screens/SettingsScreen/SettingsScreen.tsx
+@@ -59,6 +59,7 @@ import {
+   searchProviderStore,
+ } from '../../store';
+ import type {SearchProviderId} from '../../services/search/types';
++import {createSearchProvider} from '../../services/search';
+ 
+ import {CacheType, ModelType} from '../../utils/types';
+ import {
+@@ -104,6 +105,8 @@ export const SettingsScreen: React.FC = observer(() => {
+     y: number;
+   }>({x: 0, y: 0});
+   const [showSearchKeySheet, setShowSearchKeySheet] = useState(false);
++  const [searchProbe, setSearchProbe] = useState('');
++  const [searchProbeBusy, setSearchProbeBusy] = useState(false);
+   const searchProviderButtonRef = useRef<View>(null);
+   const [gpuSupported, setGpuSupported] = useState(false);
+   const [draftModelAnchor, setDraftModelAnchor] = useState<{
+@@ -1270,7 +1273,7 @@ export const SettingsScreen: React.FC = observer(() => {
+                   <Text variant="labelSmall" style={styles.textDescription}>
+                     Без API-ключа. HTTPS-запит іде прямо з телефона до
+                     пошукового сервісу. RSS і HTML відповіді обробляються
+-                    локально. Зовнішній сервіс може обмежувати запити.
++                    локально. Якщо сервіси повертають 403, доступні лише онлайн-статті Wikipedia. Для загального пошуку виберіть провайдера з ключем або власний SearXNG.
+                   </Text>
+                 )}
+                 {activeSearchProviderId === 'searxng' && (
+@@ -1280,6 +1283,20 @@ export const SettingsScreen: React.FC = observer(() => {
+                     результати локально.
+                   </Text>
+                 )}
++                <Button mode="outlined" disabled={!searchProviderStore.canSearch || searchProbeBusy}
++                  loading={searchProbeBusy} onPress={async () => {
++                    setSearchProbeBusy(true);
++                    try {
++                      const hits = await createSearchProvider(activeSearchProviderId,
++                        () => searchProviderStore.getKey(activeSearchProviderId))
++                        .search('Київ', {maxResults: 3});
++                      setSearchProbe(hits.length
++                        ? `Знайдено ${hits.length}: ${hits[0].title}`
++                        : 'Сервіс відповів без результатів.');
++                    } catch (error) { setSearchProbe(String(error)); }
++                    finally { setSearchProbeBusy(false); }
++                  }}>Перевірити пошук</Button>
++                {!!searchProbe && <Text variant="bodySmall" selectable>{searchProbe}</Text>}
+                 {activeSearchProviderId !== 'device_web' && (
+                   <>
+                     <Divider style={styles.divider} />
+diff --git a/src/services/search/providers/__tests__/keyless.test.ts b/src/services/search/providers/__tests__/keyless.test.ts
+index 89fc917..127625e 100644
+--- a/src/services/search/providers/__tests__/keyless.test.ts
++++ b/src/services/search/providers/__tests__/keyless.test.ts
+@@ -71,4 +71,21 @@ describe('keyless search adapters', () => {
+       snippet: 'Опис',
+     }]);
+   });
++
++  it('uses the official encyclopedia API when public search pages return 403', async () => {
++    global.fetch = jest.fn().mockImplementation(async (url: string) => {
++      if (url.includes('wikipedia.org/w/api.php')) {
++        return json({query: {search: [{title: 'Київ', pageid: 123, snippet: 'Столиця України'}]}});
++      }
++      return {ok: false, status: 403, headers: {get: () => null}};
++    });
++    const hits = await new DeviceWebProvider().search('Київ', {maxResults: 3});
++    expect(hits).toEqual([{
++      title: 'Wikipedia · Київ',
++      url: 'https://uk.wikipedia.org/?curid=123',
++      snippet: 'Енциклопедичне джерело, не поточний веб-пошук. Столиця України',
++    }]);
++    expect(global.fetch).toHaveBeenCalledTimes(3);
++  });
++
+ });
+diff --git a/src/services/search/providers/deviceWeb.ts b/src/services/search/providers/deviceWeb.ts
+index c9f98fc..f413613 100644
+--- a/src/services/search/providers/deviceWeb.ts
++++ b/src/services/search/providers/deviceWeb.ts
+@@ -1,5 +1,5 @@
+ import type {SearchProvider, SearchHit, SearchOptions} from '../types';
+-import {fetchText} from './http';
++import {fetchJson, fetchText} from './http';
+ 
+ const stripMarkup = (value: string): string =>
+   value
+@@ -59,9 +59,26 @@ export class DeviceWebProvider implements SearchProvider {
+ 
+     try { return await this.searchDuckDuckGo(query, opts); }
+     catch (error) { failures.push('DuckDuckGo: ' + String(error)); }
++    try {
++      const hits = await this.searchWikipedia(query, opts);
++      if (hits.length) return hits;
++      failures.push('Wikipedia API: немає результатів');
++    } catch (error) { failures.push('Wikipedia API: ' + String(error)); }
+     throw new Error('Веб-пошук недоступний з цього підключення. ' + failures.join('; '));
+   }
+ 
++  private async searchWikipedia(query: string, opts: SearchOptions): Promise<SearchHit[]> {
++    type WikiResponse = {query?: {search?: {title: string; snippet: string; pageid: number}[]}};
++    const language = /[а-яіїєґ]/i.test(query) ? 'uk' : 'en';
++    const endpoint = `https://${language}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&srlimit=${Math.min(8, Math.max(1, opts.maxResults))}&format=json`;
++    const response = await fetchJson<WikiResponse>(endpoint, {method: 'GET', headers: {Accept: 'application/json', 'User-Agent': 'JarvisAuthorAI/0.9 (Android; https://github.com/AuthorGramProject/aaa)'}});
++    return (response.query?.search ?? []).map(page => ({
++      title: `Wikipedia · ${page.title}`,
++      url: `https://${language}.wikipedia.org/?curid=${page.pageid}`,
++      snippet: `Енциклопедичне джерело, не поточний веб-пошук. ${stripMarkup(page.snippet).slice(0, 500)}`,
++    }));
++  }
++
+   private async searchDuckDuckGo(query: string, opts: SearchOptions): Promise<SearchHit[]> {
+     const endpoint =
+       'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query);
+diff --git a/src/services/talents/types.ts b/src/services/talents/types.ts
+index 0dae2d3..c1ea268 100644
+--- a/src/services/talents/types.ts
++++ b/src/services/talents/types.ts
+@@ -18,6 +18,7 @@ export interface WebSearchResultItem {
+ export type TalentResult =
+   | {type: 'html'; html: string; title?: string; summary: string}
+   | {type: 'text'; summary: string}
++  | {type: 'image'; imageUri: string; summary: string}
+   | {
+       type: 'search';
+       query: string;
