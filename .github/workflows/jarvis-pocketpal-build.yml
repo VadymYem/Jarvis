@@ -56,6 +56,8 @@ jobs:
           git apply ../pocketpal/jarvis-screen-v0.6.patch
           git apply --check ../pocketpal/jarvis-knowledge-v0.7.patch
           git apply ../pocketpal/jarvis-knowledge-v0.7.patch
+          git apply --check ../pocketpal/jarvis-knowledge-ci-fixes.patch
+          git apply ../pocketpal/jarvis-knowledge-ci-fixes.patch
           git diff --check
 
       - name: Add Jarvis badge to launcher artwork

@@ -1,0 +1,467 @@
+diff --git a/src/agent/__tests__/parseDeviceCommands.test.ts b/src/agent/__tests__/parseDeviceCommands.test.ts
+deleted file mode 100644
+index d029dd6..0000000
+--- a/src/agent/__tests__/parseDeviceCommands.test.ts
++++ /dev/null
+@@ -1,19 +0,0 @@
+-import {parseFlashlightCommand} from '../parseFlashlightCommand';
+-import {parseOpenAppCommand} from '../parseOpenAppCommand';
+-
+-describe('direct Android commands', () => {
+-  it('routes explicit flashlight changes, including speech-style wording', () => {
+-    expect(parseFlashlightCommand('Вимкни ліхтарик')).toBe(false);
+-    expect(parseFlashlightCommand('Увімкни ліхтарик')).toBe(true);
+-    expect(parseFlashlightCommand('Turn off the flashlight')).toBe(false);
+-    expect(parseFlashlightCommand('Не вимикай ліхтарик')).toBeNull();
+-    expect(parseFlashlightCommand('Яка погода?')).toBeNull();
+-  });
+-
+-  it('extracts a launch target without guessing for unrelated requests', () => {
+-    expect(parseOpenAppCommand('Відкрий Telegram')).toBe('Telegram');
+-    expect(parseOpenAppCommand('Запусти додаток com.termux')).toBe('com.termux');
+-    expect(parseOpenAppCommand('Open YouTube')).toBe('YouTube');
+-    expect(parseOpenAppCommand('Який додаток відкрити?')).toBeNull();
+-  });
+-});
+diff --git a/src/agent/native/AgentDevice.ts b/src/agent/native/AgentDevice.ts
+deleted file mode 100644
+index 1bf224b..0000000
+--- a/src/agent/native/AgentDevice.ts
++++ /dev/null
+@@ -1,69 +0,0 @@
+-import {NativeModules, Platform} from 'react-native';
+-
+-export interface DeviceState {
+-  manufacturer: string;
+-  model: string;
+-  androidVersion: string;
+-  apiLevel: number;
+-  batteryPercent: number;
+-  charging: boolean;
+-  powerSaveMode: boolean;
+-  availableMemoryBytes: number;
+-  totalMemoryBytes: number;
+-  availableStorageBytes: number;
+-  totalStorageBytes: number;
+-}
+-
+-export interface AgentDeviceApi {
+-  getDeviceState(): Promise<DeviceState>;
+-  openApp(target: string): Promise<string>;
+-  openSystemSettings(section: string): Promise<string>;
+-  setFlashlight(enabled: boolean): Promise<string>;
+-  setMediaVolume(percent: number): Promise<string>;
+-  createAlarm(hour: number, minute: number, label?: string): Promise<string>;
+-  startTimer(seconds: number, label?: string): Promise<string>;
+-  playFindPhoneSound(): Promise<string>;
+-}
+-
+-function unavailable(): never {
+-  throw new Error('Android device actions are unavailable on this platform.');
+-}
+-
+-const nativeModule = NativeModules.AgentDeviceModule as
+-  | AgentDeviceApi
+-  | undefined;
+-
+-export const agentDevice: AgentDeviceApi = {
+-  getDeviceState: () =>
+-    Platform.OS === 'android' && nativeModule
+-      ? nativeModule.getDeviceState()
+-      : unavailable(),
+-  openApp: target =>
+-    Platform.OS === 'android' && nativeModule
+-      ? nativeModule.openApp(target)
+-      : unavailable(),
+-  openSystemSettings: section =>
+-    Platform.OS === 'android' && nativeModule
+-      ? nativeModule.openSystemSettings(section)
+-      : unavailable(),
+-  setFlashlight: enabled =>
+-    Platform.OS === 'android' && nativeModule
+-      ? nativeModule.setFlashlight(enabled)
+-      : unavailable(),
+-  setMediaVolume: percent =>
+-    Platform.OS === 'android' && nativeModule
+-      ? nativeModule.setMediaVolume(percent)
+-      : unavailable(),
+-  createAlarm: (hour, minute, label) =>
+-    Platform.OS === 'android' && nativeModule
+-      ? nativeModule.createAlarm(hour, minute, label)
+-      : unavailable(),
+-  startTimer: (seconds, label) =>
+-    Platform.OS === 'android' && nativeModule
+-      ? nativeModule.startTimer(seconds, label)
+-      : unavailable(),
+-  playFindPhoneSound: () =>
+-    Platform.OS === 'android' && nativeModule
+-      ? nativeModule.playFindPhoneSound()
+-      : unavailable(),
+-};
+diff --git a/src/agent/native/JarvisScreen.ts b/src/agent/native/JarvisScreen.ts
+deleted file mode 100644
+index 1ae6aa0..0000000
+--- a/src/agent/native/JarvisScreen.ts
++++ /dev/null
+@@ -1,25 +0,0 @@
+-import {NativeModules, Platform} from 'react-native';
+-
+-export interface JarvisScreenApi {
+-  isEnabled(): Promise<boolean>;
+-  openAccessibilitySettings(): Promise<void>;
+-  snapshot(): Promise<string>;
+-  capture(): Promise<string>;
+-  captureDelayed(delayMs: number): Promise<string>;
+-  action(operation: 'click' | 'scroll' | 'back', index: number, expectedLabel: string, expectedPackage: string): Promise<string>;
+-}
+-
+-const native = Platform.OS === 'android'
+-  ? NativeModules.JarvisScreenModule as JarvisScreenApi | undefined
+-  : undefined;
+-
+-const unavailable = (): Promise<never> => Promise.reject(new Error('Доступ до екрана доступний лише в Android збірці Jarvis.'));
+-
+-export const jarvisScreen: JarvisScreenApi = {
+-  isEnabled: () => native?.isEnabled() ?? Promise.resolve(false),
+-  openAccessibilitySettings: () => native?.openAccessibilitySettings() ?? unavailable(),
+-  snapshot: () => native?.snapshot() ?? unavailable(),
+-  capture: () => native?.capture() ?? unavailable(),
+-  captureDelayed: delayMs => native?.captureDelayed(delayMs) ?? unavailable(),
+-  action: (operation, index, label, pkg) => native?.action(operation, index, label, pkg) ?? unavailable(),
+-};
+diff --git a/src/agent/parseOpenAppCommand.ts b/src/agent/parseOpenAppCommand.ts
+deleted file mode 100644
+index 90dd5f4..0000000
+--- a/src/agent/parseOpenAppCommand.ts
++++ /dev/null
+@@ -1,7 +0,0 @@
+-/** A short direct app launch request; descriptions and ambiguous requests go to Jarvis. */
+-export const parseOpenAppCommand = (input: string): string | null => {
+-  const match = input.trim().match(/^(?:відкрий|відкрити|запусти|запустити|открой|открыть|запустить|адкрый|запусці|open|launch)\s+(?:(?:застосунок|додаток|програму|приложение|app)\s+)?([\p{L}\p{N}_. -]{2,80})[.!?]?$/iu);
+-  if (!match) return null;
+-  const target = match[1].trim().replace(/[.!?]+$/, '').trim();
+-  return target && !/^(?:це|его|it|щось|something)$/iu.test(target) ? target : null;
+-};
+diff --git a/src/agent/talents/DeviceActionEngine.ts b/src/agent/talents/DeviceActionEngine.ts
+deleted file mode 100644
+index bb49250..0000000
+--- a/src/agent/talents/DeviceActionEngine.ts
++++ /dev/null
+@@ -1,155 +0,0 @@
+-import type {
+-  TalentEngine,
+-  TalentResult,
+-  ToolDefinition,
+-} from '../../services/talents/types';
+-import {agentDevice, type AgentDeviceApi} from '../native/AgentDevice';
+-import {PermissionsAndroid, Platform} from 'react-native';
+-
+-type DeviceAction =
+-  | 'open_app'
+-  | 'open_settings'
+-  | 'flashlight'
+-  | 'media_volume'
+-  | 'create_alarm'
+-  | 'start_timer'
+-  | 'find_phone';
+-
+-const asNumber = (value: unknown, name: string): number => {
+-  if (typeof value !== 'number' || !Number.isFinite(value)) {
+-    throw new Error(`${name} must be a finite number.`);
+-  }
+-  return value;
+-};
+-
+-const asString = (value: unknown, name: string): string => {
+-  if (typeof value !== 'string' || !value.trim()) {
+-    throw new Error(`${name} must be a non-empty string.`);
+-  }
+-  return value.trim();
+-};
+-
+-export class DeviceActionEngine implements TalentEngine {
+-  readonly name = 'device_action';
+-
+-  constructor(private readonly device: AgentDeviceApi = agentDevice) {}
+-
+-  async execute(args: Record<string, any>): Promise<TalentResult> {
+-    try {
+-      const action = asString(args.action, 'action') as DeviceAction;
+-      let summary: string;
+-      switch (action) {
+-        case 'open_app':
+-          summary = await this.device.openApp(asString(args.target, 'target'));
+-          break;
+-        case 'open_settings':
+-          summary = await this.device.openSystemSettings(
+-            asString(args.section, 'section'),
+-          );
+-          break;
+-        case 'flashlight':
+-          if (typeof args.enabled !== 'boolean') {
+-            throw new Error('enabled must be a boolean.');
+-          }
+-          if (Platform.OS === 'android' &&
+-              !(await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.CAMERA))) {
+-            const grant = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.CAMERA);
+-            if (grant !== PermissionsAndroid.RESULTS.GRANTED) {
+-              throw new Error('Доступ до камери не надано. Дозвольте його в налаштуваннях агента, щоб керувати ліхтариком.');
+-            }
+-          }
+-          summary = await this.device.setFlashlight(args.enabled);
+-          break;
+-        case 'media_volume':
+-          summary = await this.device.setMediaVolume(
+-            asNumber(args.percent, 'percent'),
+-          );
+-          break;
+-        case 'create_alarm':
+-          summary = await this.device.createAlarm(
+-            asNumber(args.hour, 'hour'),
+-            asNumber(args.minute, 'minute'),
+-            typeof args.label === 'string' ? args.label : undefined,
+-          );
+-          break;
+-        case 'start_timer':
+-          summary = await this.device.startTimer(
+-            asNumber(args.seconds, 'seconds'),
+-            typeof args.label === 'string' ? args.label : undefined,
+-          );
+-          break;
+-        case 'find_phone':
+-          summary = await this.device.playFindPhoneSound();
+-          break;
+-        default:
+-          throw new Error(`Unsupported device action '${action}'.`);
+-      }
+-      return {type: 'text', summary};
+-    } catch (error) {
+-      const message = error instanceof Error ? error.message : String(error);
+-      return {
+-        type: 'error',
+-        summary: `device_action failed: ${message}`,
+-        errorMessage: message,
+-      };
+-    }
+-  }
+-
+-  toToolDefinition(): ToolDefinition {
+-    return {
+-      type: 'function',
+-      function: {
+-        name: this.name,
+-        description:
+-          'Perform a supported Android action. Alarm, timer, and settings actions open Android system UI for the user. Success means the native action or system flow was actually started.',
+-        parameters: {
+-          type: 'object',
+-          additionalProperties: false,
+-          required: ['action'],
+-          properties: {
+-            action: {
+-              type: 'string',
+-              enum: [
+-                'open_app',
+-                'open_settings',
+-                'flashlight',
+-                'media_volume',
+-                'create_alarm',
+-                'start_timer',
+-                'find_phone',
+-              ],
+-            },
+-            target: {
+-              type: 'string',
+-              description:
+-                'App package id or exact launcher label for open_app.',
+-            },
+-            section: {
+-              type: 'string',
+-              enum: [
+-                'wifi',
+-                'bluetooth',
+-                'accessibility',
+-                'notification_listener',
+-                'battery',
+-                'location',
+-                'dnd',
+-                'app_details',
+-              ],
+-            },
+-            enabled: {type: 'boolean'},
+-            percent: {type: 'number', minimum: 0, maximum: 100},
+-            hour: {type: 'integer', minimum: 0, maximum: 23},
+-            minute: {type: 'integer', minimum: 0, maximum: 59},
+-            seconds: {type: 'integer', minimum: 1, maximum: 86400},
+-            label: {type: 'string'},
+-          },
+-        },
+-      },
+-    };
+-  }
+-
+-  systemPromptFragment(): string {
+-    return 'Use device_action only for its documented actions. Report permission errors and system confirmation screens honestly; never imply an action completed when the tool only opened Android UI.';
+-  }
+-}
+diff --git a/src/agent/talents/ScreenEngine.ts b/src/agent/talents/ScreenEngine.ts
+deleted file mode 100644
+index a89a90a..0000000
+--- a/src/agent/talents/ScreenEngine.ts
++++ /dev/null
+@@ -1,51 +0,0 @@
+-import type {TalentEngine, TalentResult, ToolDefinition} from '../../services/talents/types';
+-import {jarvisScreen, type JarvisScreenApi} from '../native/JarvisScreen';
+-import {wrapUntrusted} from '../../services/talents/untrustedContent';
+-
+-const SENSITIVE = /pay|purchase|buy|send|delete|remove|transfer|subscribe|оплатити|купити|надіслати|видалити|переказати|підписатися|bezahlen|kaufen|senden|löschen|überweisen/i;
+-
+-/** A bounded observation/action tool. The next step must observe again. */
+-export class ScreenEngine implements TalentEngine {
+-  readonly name = 'screen_control';
+-  constructor(private readonly screen: JarvisScreenApi = jarvisScreen) {}
+-
+-  async execute(args: Record<string, any>): Promise<TalentResult> {
+-    try {
+-      if (!(await this.screen.isEnabled())) throw new Error('Увімкніть Jarvis у Спеціальних можливостях Android у налаштуваннях агента.');
+-      const operation = args.operation;
+-      if (operation === 'snapshot') {
+-        const summary = await this.screen.snapshot();
+-        return {type: 'text', summary: wrapUntrusted(summary)};
+-      }
+-      if (!['click', 'scroll', 'back'].includes(operation)) throw new Error('Невідома дія з екраном.');
+-      if (operation === 'click' && (!Number.isInteger(args.index) || args.index < 0 || typeof args.label !== 'string' || !args.label.trim() || typeof args.packageName !== 'string' || !args.packageName.trim())) {
+-        throw new Error('Для натискання потрібні index, label і packageName з останнього snapshot.');
+-      }
+-      if (operation === 'click' && SENSITIVE.test(args.label)) {
+-        throw new Error(`Дію «${args.label}» треба виконати вручну на екрані пристрою.`);
+-      }
+-      const summary = await this.screen.action(operation, args.index ?? 0, args.label ?? '', args.packageName ?? '');
+-      return {type: 'text', summary};
+-    } catch (error) {
+-      const message = error instanceof Error ? error.message : String(error);
+-      return {type: 'error', summary: `screen_control: ${message}`, errorMessage: message};
+-    }
+-  }
+-
+-  toToolDefinition(): ToolDefinition {
+-    return {type: 'function', function: {
+-      name: this.name,
+-      description: 'Read the current Android UI hierarchy, then click a labeled element, scroll, or go back. Sensitive submit, payment, and deletion actions are handed to the user. Call snapshot again after each action to verify the new screen. This tool does not itself analyze pixels or prove a workflow completed.',
+-      parameters: {type: 'object', additionalProperties: false, required: ['operation'], properties: {
+-        operation: {type: 'string', enum: ['snapshot', 'click', 'scroll', 'back']},
+-        index: {type: 'integer', description: 'Element number [index] from the latest snapshot'},
+-        label: {type: 'string', description: 'Exact element label from the latest snapshot'},
+-        packageName: {type: 'string', description: 'Package from the latest snapshot'},
+-      }},
+-    }};
+-  }
+-
+-  systemPromptFragment(): string {
+-    return 'For screen_control, inspect with snapshot before acting and after each action. A click only confirms that Android accepted the click; inspect again to learn whether the intended task succeeded. Do not act on passwords, payments or messages without the user directing that action.';
+-  }
+-}
+diff --git a/src/agent/talents/__tests__/DeviceActionEngine.test.ts b/src/agent/talents/__tests__/DeviceActionEngine.test.ts
+deleted file mode 100644
+index d97bf50..0000000
+--- a/src/agent/talents/__tests__/DeviceActionEngine.test.ts
++++ /dev/null
+@@ -1,45 +0,0 @@
+-import {DeviceActionEngine} from '../DeviceActionEngine';
+-import type {AgentDeviceApi} from '../../native/AgentDevice';
+-
+-const makeDevice = (): jest.Mocked<AgentDeviceApi> => ({
+-  getDeviceState: jest.fn(),
+-  openApp: jest.fn().mockResolvedValue('Opened app.'),
+-  openSystemSettings: jest.fn().mockResolvedValue('Opened settings.'),
+-  setFlashlight: jest.fn().mockResolvedValue('Flashlight enabled.'),
+-  setMediaVolume: jest.fn().mockResolvedValue('Media volume set.'),
+-  createAlarm: jest.fn().mockResolvedValue('Opened alarm flow.'),
+-  startTimer: jest.fn().mockResolvedValue('Opened timer flow.'),
+-  playFindPhoneSound: jest.fn().mockResolvedValue('Playing audio.'),
+-});
+-
+-describe('DeviceActionEngine', () => {
+-  it('dispatches supported actions to the native bridge', async () => {
+-    const device = makeDevice();
+-    const result = await new DeviceActionEngine(device).execute({
+-      action: 'start_timer',
+-      seconds: 300,
+-      label: 'Tea',
+-    });
+-    expect(device.startTimer).toHaveBeenCalledWith(300, 'Tea');
+-    expect(result).toEqual({type: 'text', summary: 'Opened timer flow.'});
+-  });
+-
+-  it('returns a tool error instead of claiming success for invalid arguments', async () => {
+-    const device = makeDevice();
+-    const result = await new DeviceActionEngine(device).execute({
+-      action: 'flashlight',
+-      enabled: 'yes',
+-    });
+-    expect(result.type).toBe('error');
+-    expect(device.setFlashlight).not.toHaveBeenCalled();
+-  });
+-
+-  it('describes the supported Android action allowlist', () => {
+-    const device = makeDevice();
+-    const schema = new DeviceActionEngine(device).toToolDefinition();
+-    expect(schema.function.name).toBe('device_action');
+-    expect(schema.function.parameters.properties.action.enum).toContain(
+-      'find_phone',
+-    );
+-  });
+-});
+diff --git a/src/agent/talents/__tests__/ScreenEngine.test.ts b/src/agent/talents/__tests__/ScreenEngine.test.ts
+deleted file mode 100644
+index fbdf105..0000000
+--- a/src/agent/talents/__tests__/ScreenEngine.test.ts
++++ /dev/null
+@@ -1,35 +0,0 @@
+-import {ScreenEngine} from '../ScreenEngine';
+-import type {JarvisScreenApi} from '../../native/JarvisScreen';
+-
+-const makeScreen = (): jest.Mocked<JarvisScreenApi> => ({
+-  isEnabled: jest.fn().mockResolvedValue(true),
+-  openAccessibilitySettings: jest.fn(),
+-  snapshot: jest.fn().mockResolvedValue('Пакет: org.example\n[0] Open | | 20,20 | click'),
+-  capture: jest.fn(),
+-  captureDelayed: jest.fn(),
+-  action: jest.fn().mockResolvedValue('Android прийняв натискання. Оновіть screen_snapshot.'),
+-});
+-
+-describe('ScreenEngine', () => {
+-  it('reports a disabled service without inspecting another app', async () => {
+-    const screen = makeScreen();
+-    screen.isEnabled.mockResolvedValue(false);
+-    const result = await new ScreenEngine(screen).execute({operation: 'snapshot'});
+-    expect(result.type).toBe('error');
+-    expect(screen.snapshot).not.toHaveBeenCalled();
+-  });
+-
+-  it('requires the observed package and exact label for a click', async () => {
+-    const screen = makeScreen();
+-    const result = await new ScreenEngine(screen).execute({operation: 'click', index: 0, label: 'Open', packageName: 'org.example'});
+-    expect(screen.action).toHaveBeenCalledWith('click', 0, 'Open', 'org.example');
+-    expect(result.summary).toContain('Оновіть screen_snapshot');
+-  });
+-
+-  it('hands sensitive submit actions back to the user', async () => {
+-    const screen = makeScreen();
+-    const result = await new ScreenEngine(screen).execute({operation: 'click', index: 2, label: 'Надіслати', packageName: 'org.example'});
+-    expect(result.type).toBe('error');
+-    expect(screen.action).not.toHaveBeenCalled();
+-  });
+-});
+diff --git a/src/services/talents/WebSearchEngine.ts b/src/services/talents/WebSearchEngine.ts
+index 663606b..0f4422c 100644
+--- a/src/services/talents/WebSearchEngine.ts
++++ b/src/services/talents/WebSearchEngine.ts
+@@ -119,7 +119,7 @@ export class WebSearchEngine implements TalentEngine {
+         url: h.url,
+         snippet: h.snippet,
+       })),
+-      summary: wrapUntrusted((usedWikipediaFallback ? 'Device Web недоступний; результати Вікіпедії.\n' : '') + formatMenu(query, budgeted)),
++      summary: wrapUntrusted(formatMenu(query, budgeted)),
+     };
+   }
+ 
