@@ -1,5 +1,5 @@
 diff --git a/android/app/build.gradle b/android/app/build.gradle
-index 0fd744f..77adcbf 100644
+index 0fd744f..136657d 100644
 --- a/android/app/build.gradle
 +++ b/android/app/build.gradle
 @@ -1,4 +1,5 @@
@@ -26,7 +26,7 @@ index 0fd744f..77adcbf 100644
 +chaquopy {
 +    defaultConfig {
 +        version = "3.12"
-+        pip { install("pillow==11.3.0") }
++        pip { install("pillow==11.0.0") }
 +    }
 +}
 +
