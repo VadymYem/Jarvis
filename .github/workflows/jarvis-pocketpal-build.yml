@@ -69,6 +69,8 @@ jobs:
           gzip -dc ../pocketpal/jarvis-capabilities-v0.10.patch.gz > "$RUNNER_TEMP/jarvis-capabilities-v0.10.patch"
           git apply --check "$RUNNER_TEMP/jarvis-capabilities-v0.10.patch"
           git apply "$RUNNER_TEMP/jarvis-capabilities-v0.10.patch"
+          git apply --check ../pocketpal/jarvis-v0.10-ci-fixes.patch
+          git apply ../pocketpal/jarvis-v0.10-ci-fixes.patch
           git diff --check
 
       - name: Add Jarvis badge to launcher artwork
