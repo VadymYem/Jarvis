@@ -2034,7 +2034,7 @@ diff --git a/src/services/talents/index.ts b/src/services/talents/index.ts
 diff --git a/src/services/talents/searchAccess.ts b/src/services/talents/searchAccess.ts
 --- a/src/services/talents/searchAccess.ts
 +++ b/src/services/talents/searchAccess.ts
-@@ -10,8 +10,14 @@ export interface SearchAccess {
+@@ -10,6 +10,11 @@ export interface SearchAccess {
     * Consent is enforced here, not just in the Settings UI.
     */
    canSearch(): boolean;
@@ -2049,7 +2049,7 @@ diff --git a/src/services/talents/searchAccess.ts b/src/services/talents/searchA
 diff --git a/src/services/talents/WebSearchEngine.ts b/src/services/talents/WebSearchEngine.ts
 --- a/src/services/talents/WebSearchEngine.ts
 +++ b/src/services/talents/WebSearchEngine.ts
-@@ -50,15 +50,21 @@ export class WebSearchEngine implements TalentEngine {
+@@ -50,13 +50,19 @@ export class WebSearchEngine implements TalentEngine {
      }
  
      if (!this.access.canSearch()) {
@@ -2083,7 +2083,7 @@ diff --git a/src/services/talents/index.ts b/src/services/talents/index.ts
  import {RenderHtmlEngine} from './RenderHtmlEngine';
  import {CalculateEngine} from './CalculateEngine';
  import {DatetimeEngine} from './DatetimeEngine';
-@@ -47,7 +48,27 @@ function createSearchAccess(): SearchAccess {
+@@ -47,6 +48,29 @@ function createSearchAccess(): SearchAccess {
        return createSearchProvider(id, () => searchProviderStore.getKey(id));
      },
      canSearch: () => searchProviderStore.canSearch,
