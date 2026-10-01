@@ -1937,3 +1937,41 @@ diff --git a/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx b/src/screens/S
        <Button mode="text" onPress={() => Linking.openURL('https://library.kiwix.org/#lang=uk')}>Відкрити каталог Kiwix</Button>
        {archive.ready && <Button mode="text" onPress={forget}>Відключити архів</Button>}
        {!!message && <Text variant="bodySmall" selectable>{message}</Text>}
+
+diff --git a/src/store/__tests__/SearchProviderStore.test.ts b/src/store/__tests__/SearchProviderStore.test.ts
+--- a/src/store/__tests__/SearchProviderStore.test.ts
++++ b/src/store/__tests__/SearchProviderStore.test.ts
+@@ -176,7 +176,7 @@ describe('SearchProviderStore', () => {
+       store.hasConsentedToSearch = 'yes' as any;
+       store.normalizeHydratedPrefs();
+       expect(store.hasConsentedToSearch).toBe(false);
+-      expect(store.canSearch).toBe(false);
++      expect(store.canSearch).toBe(true); // default Device Web is intentionally zero-config
+     });
+ 
+     it('restores the default on a non-numeric or non-finite persisted count', async () => {
+@@ -216,9 +216,9 @@ describe('SearchProviderStore', () => {
+     });
+   });
+ 
+-  it('allows keyless Wikipedia only after explicit consent', async () => {
++  it('keeps zero-config Device Web available without consent state', async () => {
+     const store = await newStore();
+-    expect(store.canSearch).toBe(false);
++    expect(store.canSearch).toBe(true);
+     store.setConsent(true);
+     expect(store.canSearch).toBe(true);
+     store.setActiveProvider('searxng');
+@@ -227,10 +227,10 @@ describe('SearchProviderStore', () => {
+     expect(store.canSearch).toBe(false);
+   });
+ 
+-  it('allows keyless Device Web only after explicit consent', async () => {
++  it('allows keyless Device Web immediately', async () => {
+     const store = await newStore();
+     store.setActiveProvider('device_web');
+-    expect(store.canSearch).toBe(false);
++    expect(store.canSearch).toBe(true);
+     store.setConsent(true);
+     expect(store.canSearch).toBe(true);
+   });
