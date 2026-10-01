@@ -14,8 +14,8 @@ index 0fd744f..136657d 100644
          targetSdkVersion rootProject.ext.targetSdkVersion
 -        versionCode 7
 -        versionName "0.7.0"
-+        versionCode 8
-+        versionName "0.8.0"
++        versionCode 9
++        versionName "0.9.0"
          ndk {
              abiFilters "arm64-v8a"
          }
@@ -26,7 +26,10 @@ index 0fd744f..136657d 100644
 +chaquopy {
 +    defaultConfig {
 +        version = "3.12"
-+        pip { install("pillow==11.0.0") }
++        pip {
++            install("pillow==11.0.0")
++            install("pypdf==5.9.0")
++        }
 +    }
 +}
 +
@@ -889,8 +892,8 @@ index 43de19c..b7d68bf 100644
  const LOOKIE_SEEDED_KEY = 'PalStore.builtin.Lookie.seeded';
  const JARVIS_SEEDED_KEY = 'PalStore.builtin.Jarvis.seeded';
  const JARVIS_TOOLS_V07_KEY = 'PalStore.builtin.Jarvis.tools.v07';
-+const JARVIS_TOOLS_V08_KEY = 'PalStore.builtin.Jarvis.tools.v08';
-+const JARVIS_FILE_TALENTS = ['workspace', 'python_exec', 'android_document'].map(name => ({name, necessity: 'optional' as const}));
++const JARVIS_TOOLS_V09_KEY = 'PalStore.builtin.Jarvis.tools.v09';
++const JARVIS_FILE_TALENTS = ['web_search', 'read_url', 'workspace', 'python_exec', 'android_document'].map(name => ({name, necessity: 'optional' as const}));
  const JARVIS_ID_KEY = 'PalStore.builtin.Jarvis.id';
  
  class PalStore {
@@ -900,7 +903,7 @@ index 43de19c..b7d68bf 100644
      try {
 -      if (!force && (await AsyncStorage.getItem(JARVIS_SEEDED_KEY)) === 'true') {
 +      if (!force && (await AsyncStorage.getItem(JARVIS_SEEDED_KEY)) === 'true' &&
-+          (await AsyncStorage.getItem(JARVIS_TOOLS_V08_KEY)) === 'true') {
++          (await AsyncStorage.getItem(JARVIS_TOOLS_V09_KEY)) === 'true') {
          return;
        }
  
@@ -910,9 +913,9 @@ index 43de19c..b7d68bf 100644
 -        if (await AsyncStorage.getItem(JARVIS_TOOLS_V07_KEY) !== 'true') {
 -          await this.updatePal(existing.id, {pact: {talents: []}});
 -          await AsyncStorage.setItem(JARVIS_TOOLS_V07_KEY, 'true');
-+        if (await AsyncStorage.getItem(JARVIS_TOOLS_V08_KEY) !== 'true') {
++        if (await AsyncStorage.getItem(JARVIS_TOOLS_V09_KEY) !== 'true') {
 +          await this.updatePal(existing.id, {pact: {talents: JARVIS_FILE_TALENTS}});
-+          await AsyncStorage.setItem(JARVIS_TOOLS_V08_KEY, 'true');
++          await AsyncStorage.setItem(JARVIS_TOOLS_V09_KEY, 'true');
          }
          await AsyncStorage.setItem(JARVIS_SEEDED_KEY, 'true');
          return;
@@ -929,7 +932,7 @@ index 43de19c..b7d68bf 100644
        await AsyncStorage.setItem(JARVIS_ID_KEY, created.id);
        await AsyncStorage.setItem(JARVIS_SEEDED_KEY, 'true');
        await AsyncStorage.setItem(JARVIS_TOOLS_V07_KEY, 'true');
-+      await AsyncStorage.setItem(JARVIS_TOOLS_V08_KEY, 'true');
++      await AsyncStorage.setItem(JARVIS_TOOLS_V09_KEY, 'true');
      } catch (error) {
        console.error('Error initializing Jarvis agent:', error);
      }
@@ -965,6 +968,8 @@ index b52c9bc..b2b3d8b 100644
    color: ['#063B32', '#63E6BE'],
 -  pact: {talents: []},
 +  pact: {talents: [
++    {name: 'web_search', necessity: 'optional'},
++    {name: 'read_url', necessity: 'optional'},
 +    {name: 'workspace', necessity: 'optional'},
 +    {name: 'python_exec', necessity: 'optional'},
 +    {name: 'android_document', necessity: 'optional'},
