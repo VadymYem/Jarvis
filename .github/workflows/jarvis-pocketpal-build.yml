@@ -52,6 +52,10 @@ jobs:
           git apply ../pocketpal/jarvis-agent-screen-v0.4.patch
           git apply --check ../pocketpal/jarvis-agent-usability-v0.5.patch
           git apply ../pocketpal/jarvis-agent-usability-v0.5.patch
+          git apply --check ../pocketpal/jarvis-screen-v0.6.patch
+          git apply ../pocketpal/jarvis-screen-v0.6.patch
+          git apply --check ../pocketpal/jarvis-knowledge-v0.7.patch
+          git apply ../pocketpal/jarvis-knowledge-v0.7.patch
           git diff --check
 
       - name: Add Jarvis badge to launcher artwork
@@ -134,14 +138,14 @@ jobs:
           test -n "$aapt"
           "$apksigner" verify --verbose --print-certs "$apk" | tee "$RUNNER_TEMP/apk-signature.txt"
           grep -Fqi 'certificate SHA-256 digest: 3049195e638c8ac9b2c41be1981b895c09d6e482d4dc03fa6bb41a59f1b16efd' "$RUNNER_TEMP/apk-signature.txt"
-          "$aapt" dump badging "$apk" | grep -q "package: name='top.authorche.agent' versionCode='5' versionName='0.5.0'"
+          "$aapt" dump badging "$apk" | grep -q "package: name='top.authorche.agent' versionCode='7' versionName='0.7.0'"
           sha256sum "$apk"
           du -h "$apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: jarvis-authorai-0.5.0-pocketpal-arm64-apk
+          name: jarvis-authorai-0.7.0-pocketpal-arm64-apk
           retention-days: 30
           if-no-files-found: error
           path: jarvis-src/android/app/build/outputs/apk/prod/release/app-prod-release.apk
