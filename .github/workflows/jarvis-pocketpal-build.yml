@@ -68,6 +68,18 @@ jobs:
           git apply ../pocketpal/jarvis-remove-screen-module.patch
           git diff --check
 
+      - name: Export reconstructed Jarvis source for integration work
+        run: |
+          tar --exclude='.git' -czf "$RUNNER_TEMP/jarvis-reconstructed-source.tar.gz" -C jarvis-src .
+
+      - name: Upload reconstructed source
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-reconstructed-source
+          retention-days: 1
+          if-no-files-found: error
+          path: ${{ runner.temp }}/jarvis-reconstructed-source.tar.gz
+
       - name: Add Jarvis badge to launcher artwork
         run: |
           python3 -m venv "$RUNNER_TEMP/icon-venv"
