@@ -71,6 +71,8 @@ jobs:
           git apply "$RUNNER_TEMP/jarvis-capabilities-v0.10.patch"
           git apply --check ../pocketpal/jarvis-v0.10-ci-fixes.patch
           git apply ../pocketpal/jarvis-v0.10-ci-fixes.patch
+          git apply --check ../pocketpal/jarvis-v0.10-message-tests.patch
+          git apply ../pocketpal/jarvis-v0.10-message-tests.patch
           git diff --check
 
       - name: Add Jarvis badge to launcher artwork
