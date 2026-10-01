@@ -2,7 +2,7 @@ name: Jarvis PocketPal Android
 
 on:
   push:
-    branches: [main]
+    branches: [main, codex/zim-web-image-v0.9]
     paths:
       - 'pocketpal/**'
       - '.github/workflows/jarvis-pocketpal-build.yml'
@@ -64,6 +64,8 @@ jobs:
           git apply ../pocketpal/jarvis-files-python-v0.8.patch
           git apply --check ../pocketpal/jarvis-remove-screen-module.patch
           git apply ../pocketpal/jarvis-remove-screen-module.patch
+          git apply --check ../pocketpal/jarvis-zim-web-image-v0.9.patch
+          git apply ../pocketpal/jarvis-zim-web-image-v0.9.patch
           git diff --check
 
       - name: Add Jarvis badge to launcher artwork
@@ -146,14 +148,14 @@ jobs:
           test -n "$aapt"
           "$apksigner" verify --verbose --print-certs "$apk" | tee "$RUNNER_TEMP/apk-signature.txt"
           grep -Fqi 'certificate SHA-256 digest: 3049195e638c8ac9b2c41be1981b895c09d6e482d4dc03fa6bb41a59f1b16efd' "$RUNNER_TEMP/apk-signature.txt"
-          "$aapt" dump badging "$apk" | grep -q "package: name='top.authorche.agent' versionCode='8' versionName='0.8.0'"
+          "$aapt" dump badging "$apk" | grep -q "package: name='top.authorche.agent' versionCode='9' versionName='0.9.0'"
           sha256sum "$apk"
           du -h "$apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: jarvis-authorai-0.8.0-pocketpal-arm64-apk
+          name: jarvis-authorai-0.9.0-pocketpal-arm64-apk
           retention-days: 30
           if-no-files-found: error
           path: jarvis-src/android/app/build/outputs/apk/prod/release/app-prod-release.apk
