@@ -910,8 +910,8 @@ new file mode 100644
 +        out = []
 +        for ch in str(value):
 +            code = ord(ch)
-+            if ch in "\\\{\}":
-+                out.append("\\" + ch)
++            if ch in ("\\\\", "{", "}"):
++                out.append("\\\\" + ch)
 +            elif 32 <= code < 127:
 +                out.append(ch)
 +            else:
@@ -1938,40 +1938,96 @@ diff --git a/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx b/src/screens/S
        {archive.ready && <Button mode="text" onPress={forget}>Відключити архів</Button>}
        {!!message && <Text variant="bodySmall" selectable>{message}</Text>}
 
-diff --git a/src/store/__tests__/SearchProviderStore.test.ts b/src/store/__tests__/SearchProviderStore.test.ts
---- a/src/store/__tests__/SearchProviderStore.test.ts
-+++ b/src/store/__tests__/SearchProviderStore.test.ts
-@@ -176,7 +176,7 @@ describe('SearchProviderStore', () => {
-       store.hasConsentedToSearch = 'yes' as any;
-       store.normalizeHydratedPrefs();
-       expect(store.hasConsentedToSearch).toBe(false);
--      expect(store.canSearch).toBe(false);
-+      expect(store.canSearch).toBe(true); // default Device Web is intentionally zero-config
-     });
+
+diff --git a/src/services/talents/searchAccess.ts b/src/services/talents/searchAccess.ts
+--- a/src/services/talents/searchAccess.ts
++++ b/src/services/talents/searchAccess.ts
+@@ -9,6 +9,8 @@ export interface SearchAccess {
+    * Consent is enforced here, not just in the Settings UI.
+    */
+   canSearch(): boolean;
++  /** Ask for explicit consent at the moment a search is requested. */
++  requestConsent?(): Promise<boolean>;
+   getResultCount(): number;
+   readWithDefaultReader(url: string): Promise<PageContent>;
+ }
+diff --git a/src/services/talents/WebSearchEngine.ts b/src/services/talents/WebSearchEngine.ts
+--- a/src/services/talents/WebSearchEngine.ts
++++ b/src/services/talents/WebSearchEngine.ts
+@@ -50,16 +50,24 @@ export class WebSearchEngine implements TalentEngine {
+       };
+     }
  
-     it('restores the default on a non-numeric or non-finite persisted count', async () => {
-@@ -216,9 +216,9 @@ describe('SearchProviderStore', () => {
-     });
-   });
++    const provider = this.access.getActiveProvider();
+     if (!this.access.canSearch()) {
+-      const provider = this.access.getActiveProvider();
+-      return {
+-        type: 'error',
+-        summary: `web_search: ${provider.id} not enabled`,
+-        errorMessage: `Internet search is not enabled. Accept the disclosure and configure ${provider.id} in Settings → Internet Search.`,
+-      };
++      let granted = false;
++      if (provider.id === 'device_web' && this.access.requestConsent) {
++        granted = await this.access.requestConsent();
++      }
++      if (!granted && !this.access.canSearch()) {
++        return {
++          type: 'error',
++          summary: `web_search: ${provider.id} not enabled`,
++          errorMessage:
++            provider.id === 'device_web'
++              ? 'Internet search permission was not granted.'
++              : `Internet search is not enabled. Accept the disclosure and configure ${provider.id} in Settings → Internet Search.`,
++        };
++      }
+     }
  
--  it('allows keyless Wikipedia only after explicit consent', async () => {
-+  it('keeps zero-config Device Web available without consent state', async () => {
-     const store = await newStore();
--    expect(store.canSearch).toBe(false);
-+    expect(store.canSearch).toBe(true);
-     store.setConsent(true);
-     expect(store.canSearch).toBe(true);
-     store.setActiveProvider('searxng');
-@@ -227,10 +227,10 @@ describe('SearchProviderStore', () => {
-     expect(store.canSearch).toBe(false);
-   });
+-    const provider = this.access.getActiveProvider();
+     const maxResults = this.access.getResultCount();
  
--  it('allows keyless Device Web only after explicit consent', async () => {
-+  it('allows keyless Device Web immediately', async () => {
-     const store = await newStore();
-     store.setActiveProvider('device_web');
--    expect(store.canSearch).toBe(false);
-+    expect(store.canSearch).toBe(true);
-     store.setConsent(true);
-     expect(store.canSearch).toBe(true);
-   });
+     let hits: SearchHit[];
+@@ -133,7 +141,8 @@ export class WebSearchEngine implements TalentEngine {
+     return (
+       `Today's date is ${today}. You can search the web with web_search${readUrl}. ` +
+       `For time-sensitive or factual questions, search first; usually one or two searches suffice — ` +
+-      `you have a budget of ${budget} tool calls. Answer using the facts in the results and cite ` +
++      `you have a budget of ${budget} tool calls. The first Device Web search may show a one-time permission dialog; call the tool normally and let the app handle it. ` +
++      'Answer using the facts in the results and cite ' +
+       'source URLs. If the results do not contain the answer, say so rather than guessing.'
+     );
+   }
+diff --git a/src/services/talents/index.ts b/src/services/talents/index.ts
+--- a/src/services/talents/index.ts
++++ b/src/services/talents/index.ts
+@@ -1,3 +1,4 @@
++import {Alert} from 'react-native';
+ import {RenderHtmlEngine} from './RenderHtmlEngine';
+ import {CalculateEngine} from './CalculateEngine';
+ import {DatetimeEngine} from './DatetimeEngine';
+@@ -40,6 +41,26 @@ function createSearchAccess(): SearchAccess {
+       return createSearchProvider(id, () => searchProviderStore.getKey(id));
+     },
+     canSearch: () => searchProviderStore.canSearch,
++    requestConsent: async () => {
++      if (searchProviderStore.canSearch) return true;
++      return new Promise<boolean>(resolve => {
++        Alert.alert(
++          'Дозволити інтернет-пошук?',
++          'Jarvis надішле текст пошукового запиту вибраному пошуковому сервісу. Для Device Web API-ключ не потрібен.',
++          [
++            {text: 'Скасувати', style: 'cancel', onPress: () => resolve(false)},
++            {
++              text: 'Дозволити',
++              onPress: () => {
++                searchProviderStore.setConsent(true);
++                resolve(true);
++              },
++            },
++          ],
++          {cancelable: false},
++        );
++      });
++    },
+     getResultCount: () => searchProviderStore.resultCount,
+     readWithDefaultReader,
+   };
