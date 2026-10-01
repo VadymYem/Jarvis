@@ -66,19 +66,10 @@ jobs:
           git apply ../pocketpal/jarvis-agent-artifacts-v0.9.patch
           git apply --check ../pocketpal/jarvis-remove-screen-module.patch
           git apply ../pocketpal/jarvis-remove-screen-module.patch
+          gzip -dc ../pocketpal/jarvis-capabilities-v0.10.patch.gz > "$RUNNER_TEMP/jarvis-capabilities-v0.10.patch"
+          git apply --check "$RUNNER_TEMP/jarvis-capabilities-v0.10.patch"
+          git apply "$RUNNER_TEMP/jarvis-capabilities-v0.10.patch"
           git diff --check
-
-      - name: Export reconstructed Jarvis source for integration work
-        run: |
-          tar --exclude='.git' -czf "$RUNNER_TEMP/jarvis-reconstructed-source.tar.gz" -C jarvis-src .
-
-      - name: Upload reconstructed source
-        uses: actions/upload-artifact@v4
-        with:
-          name: jarvis-reconstructed-source
-          retention-days: 1
-          if-no-files-found: error
-          path: ${{ runner.temp }}/jarvis-reconstructed-source.tar.gz
 
       - name: Add Jarvis badge to launcher artwork
         run: |
@@ -160,14 +151,14 @@ jobs:
           test -n "$aapt"
           "$apksigner" verify --verbose --print-certs "$apk" | tee "$RUNNER_TEMP/apk-signature.txt"
           grep -Fqi 'certificate SHA-256 digest: 3049195e638c8ac9b2c41be1981b895c09d6e482d4dc03fa6bb41a59f1b16efd' "$RUNNER_TEMP/apk-signature.txt"
-          "$aapt" dump badging "$apk" | grep -q "package: name='top.authorche.agent' versionCode='9' versionName='0.9.0'"
+          "$aapt" dump badging "$apk" | grep -q "package: name='top.authorche.agent' versionCode='10' versionName='0.10.0'"
           sha256sum "$apk"
           du -h "$apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: jarvis-authorai-0.9.0-pocketpal-arm64-apk
+          name: jarvis-authorai-0.10.0-pocketpal-arm64-apk
           retention-days: 30
           if-no-files-found: error
           path: jarvis-src/android/app/build/outputs/apk/prod/release/app-prod-release.apk
