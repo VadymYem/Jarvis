@@ -161,11 +161,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
-        run: |
-          set -euo pipefail
-          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" \
-            --jq '.workflow_runs[].id' | sort -nr > "$RUNNER_TEMP/workflow-run-ids.txt"
-          tail -n +4 "$RUNNER_TEMP/workflow-run-ids.txt" | while read -r run_id; do
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" >/dev/null
-          done
-          echo "Kept $(head -n 3 "$RUNNER_TEMP/workflow-run-ids.txt" | tr '\n' ' ')"
+        run: bash .github/scripts/prune-workflow-runs.sh
