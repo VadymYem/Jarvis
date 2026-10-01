@@ -923,6 +923,81 @@ diff --git a/src/services/search/providers/deviceWeb.ts b/src/services/search/pr
        const title = stripMarkup(match[2]);
        if (!url || !title) continue;
        const window = html.slice(anchor.lastIndex, anchor.lastIndex + 2800);
+diff --git a/src/services/talents/__tests__/morgan-review-fixes.test.ts b/src/services/talents/__tests__/morgan-review-fixes.test.ts
+--- a/src/services/talents/__tests__/morgan-review-fixes.test.ts
++++ b/src/services/talents/__tests__/morgan-review-fixes.test.ts
+@@ -32,7 +32,7 @@
+ 
+   it('returns all schemas when talentNames is undefined', () => {
+     const schemas = deriveToolSchemas();
+-    expect(schemas).toHaveLength(9);
++    expect(schemas).toHaveLength(11);
+   });
+ 
+   it('includes the internet-search talents in the full set', () => {
+diff --git a/src/services/talents/__tests__/pact-cleanup.test.ts b/src/services/talents/__tests__/pact-cleanup.test.ts
+--- a/src/services/talents/__tests__/pact-cleanup.test.ts
++++ b/src/services/talents/__tests__/pact-cleanup.test.ts
+@@ -142,10 +142,11 @@
+     expect(talentRegistry.getAll()).toHaveLength(0);
+ 
+     const schemas = deriveToolSchemas();
+-    expect(schemas).toHaveLength(9);
++    expect(schemas).toHaveLength(11);
+ 
+     const names = schemas.map(s => s.function.name).sort();
+     expect(names).toEqual([
++      'android_document',
+       'calculate',
+       'datetime',
+       'device_action',
+@@ -153,6 +154,7 @@
+       'python_exec',
+       'read_url',
+       'render_html',
++      'shizuku_system',
+       'web_search',
+       'workspace',
+     ]);
+@@ -179,7 +181,7 @@
+       tool_choice: 'auto' as const,
+       jinja: true,
+     };
+-    expect(completionSettings.tools).toHaveLength(9);
++    expect(completionSettings.tools).toHaveLength(11);
+     expect(completionSettings.tools[0].type).toBe('function');
+   });
+ });
+diff --git a/src/services/talents/__tests__/pact-vocabulary-audit.test.ts b/src/services/talents/__tests__/pact-vocabulary-audit.test.ts
+--- a/src/services/talents/__tests__/pact-vocabulary-audit.test.ts
++++ b/src/services/talents/__tests__/pact-vocabulary-audit.test.ts
+@@ -126,7 +126,7 @@
+ 
+     it('returns ToolDefinition array for all registered engines', () => {
+       const schemas = deriveToolSchemas();
+-      expect(schemas).toHaveLength(9);
++      expect(schemas).toHaveLength(11);
+       const names = schemas.map(s => s.function.name);
+       expect(names).toContain('render_html');
+       expect(names).toContain('calculate');
+@@ -137,6 +137,8 @@
+       expect(names).toContain('device_action');
+       expect(names).toContain('workspace');
+       expect(names).toContain('python_exec');
++      expect(names).toContain('android_document');
++      expect(names).toContain('shizuku_system');
+     });
+ 
+     it('works without prior registerDefaultTalents call', () => {
+@@ -144,7 +146,7 @@
+       // registerDefaultTalents internally.
+       expect(talentRegistry.has('render_html')).toBe(false);
+       const schemas = deriveToolSchemas();
+-      expect(schemas).toHaveLength(9);
++      expect(schemas).toHaveLength(11);
+       expect(talentRegistry.has('render_html')).toBe(true);
+     });
+   });
 diff --git a/src/services/talents/index.ts b/src/services/talents/index.ts
 --- a/src/services/talents/index.ts
 +++ b/src/services/talents/index.ts
