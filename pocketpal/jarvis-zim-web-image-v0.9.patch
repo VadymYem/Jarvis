@@ -14,14 +14,13 @@ index 136657d..28147a8 100644
              abiFilters "arm64-v8a"
          }
 diff --git a/android/app/src/main/java/top/authorche/agent/OfflineZimModule.kt b/android/app/src/main/java/top/authorche/agent/OfflineZimModule.kt
-index 6cbd23d..b2a1b6b 100644
+index 6cbd23d..a396a8f 100644
 --- a/android/app/src/main/java/top/authorche/agent/OfflineZimModule.kt
 +++ b/android/app/src/main/java/top/authorche/agent/OfflineZimModule.kt
-@@ -11,19 +11,54 @@ import com.facebook.react.bridge.BaseActivityEventListener
- import com.facebook.react.bridge.Promise
+@@ -12,18 +12,54 @@ import com.facebook.react.bridge.Promise
  import com.facebook.react.bridge.ReactApplicationContext
  import com.facebook.react.bridge.ReactContextBaseJavaModule
--import com.facebook.react.bridge.ReactMethod
+ import com.facebook.react.bridge.ReactMethod
 +import com.facebook.react.bridge.WritableArray
 +import com.facebook.react.bridge.WritableMap
 +import org.json.JSONArray
@@ -74,7 +73,7 @@ index 6cbd23d..b2a1b6b 100644
  
    private val listener: ActivityEventListener = object : BaseActivityEventListener() {
      override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
-@@ -33,17 +68,32 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
+@@ -33,17 +69,32 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
        if (resultCode != Activity.RESULT_OK || data?.data == null) { promise.resolve(null); return }
        val uri = data.data!!
        executor.execute {
@@ -114,7 +113,7 @@ index 6cbd23d..b2a1b6b 100644
        }
      }
    }
-@@ -59,108 +109,97 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
+@@ -59,108 +110,97 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
          addCategory(Intent.CATEGORY_OPENABLE)
          type = "*/*"
@@ -281,7 +280,7 @@ index 6cbd23d..b2a1b6b 100644
    override fun invalidate() {
      context.removeActivityEventListener(listener)
      pending?.reject("ZIM_CLOSED", "Archive picker closed")
-@@ -169,5 +208,5 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
+@@ -169,5 +209,5 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
      super.invalidate()
    }
  
