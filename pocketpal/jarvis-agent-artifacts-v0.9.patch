@@ -12,7 +12,7 @@ diff --git a/android/app/build.gradle b/android/app/build.gradle
          ndk {
              abiFilters "arm64-v8a"
          }
-@@ -188,7 +188,10 @@ chaquopy {
+@@ -188,5 +188,8 @@ chaquopy {
      defaultConfig {
          version = "3.12"
 -        pip { install("pillow==11.0.0") }
@@ -25,7 +25,7 @@ diff --git a/android/app/build.gradle b/android/app/build.gradle
 diff --git a/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt b/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
 --- a/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
 +++ b/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
-@@ -10,9 +10,9 @@ class AgentDevicePackage : ReactPackage {
+@@ -10,8 +10,8 @@ class AgentDevicePackage : ReactPackage {
      listOf(
        ExternalSpeechModule(reactContext),
        LiveVoiceModule(reactContext),
@@ -1760,7 +1760,7 @@ new file mode 100644
 diff --git a/src/services/talents/registerTalentUIs.ts b/src/services/talents/registerTalentUIs.ts
 --- a/src/services/talents/registerTalentUIs.ts
 +++ b/src/services/talents/registerTalentUIs.ts
-@@ -2,6 +2,7 @@ import {talentUIRegistry} from './TalentUIRegistry';
+@@ -2,5 +2,6 @@ import {talentUIRegistry} from './TalentUIRegistry';
  import {RenderHtmlTalentUI} from './RenderHtmlTalentUI';
  import {WebSearchTalentUI} from './WebSearchTalentUI';
 +import {ArtifactTalentUI} from '../../agent/talents/ArtifactTalentUI';
@@ -1806,7 +1806,7 @@ diff --git a/src/store/__tests__/PalStore.test.ts b/src/store/__tests__/PalStore
 diff --git a/src/store/onboarding/onboardingPals.ts b/src/store/onboarding/onboardingPals.ts
 --- a/src/store/onboarding/onboardingPals.ts
 +++ b/src/store/onboarding/onboardingPals.ts
-@@ -114,12 +114,14 @@ const PAL_PIP: OnboardingPalDef = {
+@@ -114,11 +114,13 @@ const PAL_PIP: OnboardingPalDef = {
    key: 'pip',
    name: 'Jarvis',
    description:
@@ -1824,7 +1824,7 @@ diff --git a/src/store/onboarding/onboardingPals.ts b/src/store/onboarding/onboa
 diff --git a/src/store/PalStore.ts b/src/store/PalStore.ts
 --- a/src/store/PalStore.ts
 +++ b/src/store/PalStore.ts
-@@ -55,8 +55,12 @@ import {downloadPalThumbnail, deletePalThumbnail} from '../utils/imageUtils';
+@@ -55,8 +55,11 @@ import {downloadPalThumbnail, deletePalThumbnail} from '../utils/imageUtils';
  const LOOKIE_SEEDED_KEY = 'PalStore.builtin.Lookie.seeded';
  const JARVIS_SEEDED_KEY = 'PalStore.builtin.Jarvis.seeded';
  const JARVIS_TOOLS_V07_KEY = 'PalStore.builtin.Jarvis.tools.v07';
@@ -1837,7 +1837,7 @@ diff --git a/src/store/PalStore.ts b/src/store/PalStore.ts
 +  "You are Jarvis, AuthorChe's private pocket AI. Reply in the user's language, with Ukrainian as the default. Operate as an agent, not a code-only chatbot. For current or external facts, use web_search first and read_url for important sources; never claim you searched if the tool failed. For an image, PDF, DOCX, HTML page, source file, report or other artifact, use the available workspace/python tools to create the actual file and return the resulting artifact in chat instead of merely printing implementation code. Use Android document tools to read user-selected files and offline ZIM evidence when relevant. Clearly mark offline knowledge as potentially outdated. Never claim a photorealistic AI image was generated unless a real image-generation model produced it.";
  
  class PalStore {
-@@ -797,17 +801,22 @@ class PalStore {
+@@ -797,16 +801,19 @@ class PalStore {
    private async initializeJarvisPal(force = false): Promise<void> {
      try {
        if (!force && (await AsyncStorage.getItem(JARVIS_SEEDED_KEY)) === 'true' &&
@@ -1861,7 +1861,7 @@ diff --git a/src/store/PalStore.ts b/src/store/PalStore.ts
          }
          await AsyncStorage.setItem(JARVIS_SEEDED_KEY, 'true');
          return;
-@@ -817,9 +826,9 @@ class PalStore {
+@@ -817,8 +826,7 @@ class PalStore {
          name: 'Jarvis',
          description:
            'A private multilingual pocket AI with offline knowledge.',
@@ -1871,7 +1871,7 @@ diff --git a/src/store/PalStore.ts b/src/store/PalStore.ts
          isSystemPromptChanged: false,
          useAIPrompt: false,
          defaultModel: undefined,
-@@ -835,6 +844,7 @@ class PalStore {
+@@ -835,7 +844,8 @@ class PalStore {
        await AsyncStorage.setItem(JARVIS_ID_KEY, created.id);
        await AsyncStorage.setItem(JARVIS_SEEDED_KEY, 'true');
        await AsyncStorage.setItem(JARVIS_TOOLS_V07_KEY, 'true');
