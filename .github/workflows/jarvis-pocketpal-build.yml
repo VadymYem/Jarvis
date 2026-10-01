@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: jarvis-pocketpal-${{ github.ref }}
@@ -45,6 +46,8 @@ jobs:
           git apply ../pocketpal/jarvis-device-search-v0.3.patch
           git apply --check ../pocketpal/jarvis-migration-v0.3.patch
           git apply ../pocketpal/jarvis-migration-v0.3.patch
+          git apply --check ../pocketpal/jarvis-ci-fixes.patch
+          git apply ../pocketpal/jarvis-ci-fixes.patch
           git diff --check
 
       - name: Add Jarvis badge to launcher artwork
@@ -152,3 +155,17 @@ jobs:
             --title "Jarvis | AuthorAi 0.3.0 — PocketPal test" \
             --notes-file pocketpal/RELEASE_NOTES.md \
             --prerelease
+
+      - name: Keep only the three newest workflow runs
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" \
+            --jq '.workflow_runs[].id' | sort -nr > "$RUNNER_TEMP/workflow-run-ids.txt"
+          tail -n +4 "$RUNNER_TEMP/workflow-run-ids.txt" | while read -r run_id; do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" >/dev/null
+          done
+          echo "Kept $(head -n 3 "$RUNNER_TEMP/workflow-run-ids.txt" | tr '\n' ' ')"
