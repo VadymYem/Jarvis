@@ -645,13 +645,12 @@ index 86830f3..0c934b8 100644
        isVideoCapable && promptText !== undefined
          ? promptText
 diff --git a/src/components/MarkdownView/CodeRenderer.tsx b/src/components/MarkdownView/CodeRenderer.tsx
-index c51ba43..1461f86 100644
+index c51ba43..f9d2dee 100644
 --- a/src/components/MarkdownView/CodeRenderer.tsx
 +++ b/src/components/MarkdownView/CodeRenderer.tsx
-@@ -1,11 +1,17 @@
+@@ -1,11 +1,16 @@
  import React from 'react';
 -import {View} from 'react-native';
-+import React from 'react';
 +import {Alert, View} from 'react-native';
 +import {Button, Text} from 'react-native-paper';
  
@@ -667,7 +666,7 @@ index c51ba43..1461f86 100644
  
  import {codeHighlighterPreOverride, createStyles} from './styles';
  
-@@ -42,6 +48,8 @@ function decodeHTMLEntities(text: string): string {
+@@ -42,6 +47,8 @@ function decodeHTMLEntities(text: string): string {
   */
  export const CodeRenderer = ({TDefaultRenderer, ...props}: any) => {
    const theme = useTheme();
@@ -676,7 +675,7 @@ index c51ba43..1461f86 100644
    const styles = createStyles(theme);
    const isCodeBlock = props?.tnode?.parent?.tagName === 'pre';
    if (!isCodeBlock) {
-@@ -63,6 +71,7 @@ export const CodeRenderer = ({TDefaultRenderer, ...props}: any) => {
+@@ -63,6 +70,7 @@ export const CodeRenderer = ({TDefaultRenderer, ...props}: any) => {
  
    return (
      <View>
@@ -684,7 +683,7 @@ index c51ba43..1461f86 100644
        <CodeBlockHeader language={language} content={content} />
        <CodeHighlighter
          hljsStyle={atomOneDark}
-@@ -74,6 +83,25 @@ export const CodeRenderer = ({TDefaultRenderer, ...props}: any) => {
+@@ -74,6 +82,25 @@ export const CodeRenderer = ({TDefaultRenderer, ...props}: any) => {
          customStyle={codeHighlighterPreOverride}>
          {content}
        </CodeHighlighter>
@@ -711,7 +710,7 @@ index c51ba43..1461f86 100644
    );
  };
 diff --git a/src/hooks/useChatSession.ts b/src/hooks/useChatSession.ts
-index 48a7def..4d84a82 100644
+index 48a7def..321e746 100644
 --- a/src/hooks/useChatSession.ts
 +++ b/src/hooks/useChatSession.ts
 @@ -1,4 +1,5 @@
@@ -720,6 +719,15 @@ index 48a7def..4d84a82 100644
  
  import {toJS, runInAction} from 'mobx';
  import type {JinjaFormattedChatResult} from 'llama.rn';
+@@ -17,7 +18,7 @@ import {
+ } from '../store';
+ import {resolveReasoningCapability} from '../utils/reasoningCapability';
+ 
+-import {MessageType, ModelOrigin, User} from '../utils/types';
++import {MessageType, ModelOrigin, User, type ChatMessage} from '../utils/types';
+ import {createMultimodalWarning} from '../utils/errors';
+ import {
+   assembleMessages,
 @@ -45,6 +46,7 @@ import type {ToolDefinition} from '../services/talents/types';
  import {retrieveKnowledge, wantsWebSearch} from '../knowledge/retrieve';
  import {recoverArtifactFromAssistantText} from '../agent/artifactRecovery';
@@ -741,11 +749,19 @@ index 48a7def..4d84a82 100644
    const completionParamsWithAppProps = {
      ...sessionCompletionSettings,
 -    messages,
-+    messages: localModel ? localChatMessages(messages) : messages,
++    messages: localModel ? localChatMessages(messages as ChatMessage[]) : messages,
      stop: stopWords,
    };
  
-@@ -668,6 +671,11 @@ export const useChatSession = (
+@@ -600,6 +603,7 @@ export const useChatSession = (
+       pal,
+       model: modelStore.activeModel,
+     });
++    const localModel = modelStore.activeModel?.origin !== ModelOrigin.REMOTE;
+ 
+     const {cleanCompletionParams, messageInfo} = await prepareCompletion({
+       imageUris: imageUris || [],
+@@ -668,6 +672,11 @@ export const useChatSession = (
        }
      }
  
@@ -757,7 +773,7 @@ index 48a7def..4d84a82 100644
      try {
        const events = runAgent({
          engine,
-@@ -677,6 +685,7 @@ export const useChatSession = (
+@@ -677,6 +686,7 @@ export const useChatSession = (
          triggerMarkers,
          messageId: messageInfo.id,
          signal: abortRef.current.signal,
@@ -765,7 +781,7 @@ index 48a7def..4d84a82 100644
        });
  
        // The chunk-cycle would otherwise run entirely via microtask
-@@ -940,6 +949,11 @@ export const useChatSession = (
+@@ -940,6 +950,11 @@ export const useChatSession = (
          await addSystemMessage(`${l10n.chat.completionFailed}${errorMessage}`);
        }
      } finally {
@@ -845,17 +861,20 @@ index 753cfc6..d73ed7e 100644
          <Button mode="contained-tonal" onPress={choose}>
            {archive.ready ? 'Додати ще ZIM' : 'Додати ZIM'}
 diff --git a/src/services/agent/AgentRunner.ts b/src/services/agent/AgentRunner.ts
-index df3c328..8d06882 100644
+index df3c328..c38583b 100644
 --- a/src/services/agent/AgentRunner.ts
 +++ b/src/services/agent/AgentRunner.ts
-@@ -13,6 +13,7 @@ import type {
+@@ -13,8 +13,9 @@ import type {
    TokenDelta,
  } from './AgentRunner.types';
  import type {TalentResult} from '../talents/types';
 +import {localChatMessages} from '../../utils/localChatMessages';
  
- export const DEFAULT_MAX_TURNS = 5;
+-export const DEFAULT_MAX_TURNS = 5;
++export const DEFAULT_MAX_TURNS = 10;
  
+ const BUDGET_EXHAUSTED_NUDGE =
+   '(Tool budget exhausted. Answer now using only the information gathered above; if it is insufficient, say what is missing.)';
 @@ -252,6 +253,7 @@ export async function* runAgent(
      messageId,
      maxTurns = DEFAULT_MAX_TURNS,
@@ -913,6 +932,19 @@ index 40de69c..8cdd08f 100644
      throw new Error(
        'Веб-пошук недоступний з цього підключення. ' + failures.join('; '),
      );
+diff --git a/src/store/PalStore.ts b/src/store/PalStore.ts
+index e0c9eb4..6335fea 100644
+--- a/src/store/PalStore.ts
++++ b/src/store/PalStore.ts
+@@ -60,7 +60,7 @@ const JARVIS_TOOLS_V09_KEY = 'PalStore.builtin.Jarvis.tools.v09';
+ const JARVIS_FILE_TALENTS = ['web_search', 'read_url', 'workspace', 'python_exec', 'android_document'].map(name => ({name, necessity: 'optional' as const}));
+ const JARVIS_ID_KEY = 'PalStore.builtin.Jarvis.id';
+ const JARVIS_SYSTEM_PROMPT =
+-  "You are Jarvis, AuthorChe's private pocket AI. Reply in the user's language, with Ukrainian as the default. Operate as an agent, not a code-only chatbot. For current or external facts, use web_search first and read_url for important sources; never claim you searched if the tool failed. For an image, PDF, DOCX, HTML page, source file, report or other artifact, use the available workspace/python tools to create the actual file and return the resulting artifact in chat instead of merely printing implementation code. Use Android document tools to read user-selected files and offline ZIM evidence when relevant. Clearly mark offline knowledge as potentially outdated. Never claim a photorealistic AI image was generated unless a real image-generation model produced it.";
++  "You are Jarvis, AuthorChe's private pocket AI. Reply in the user's language, with Ukrainian as the default. Operate as an agent, not a code-only chatbot. For a project, first identify the deliverables and file structure, then create the files in the workspace, run available local checks with python_exec, inspect errors, revise and show the final artifacts. Do not claim a test passed without running it. For current or external facts, use web_search first and read_url for important sources; never claim you searched if the tool failed. For an image, PDF, DOCX, HTML page, source file, report or other artifact, use the available workspace/python tools to create the actual file and return the resulting artifact in chat instead of merely printing implementation code. Use Android document tools to read user-selected files and offline ZIM evidence when relevant. Clearly mark offline knowledge as potentially outdated. Never claim a photorealistic AI image was generated unless a real image-generation model produced it.";
+ 
+ class PalStore {
+   private initializationPromise: Promise<void> | null = null;
 diff --git a/src/utils/__tests__/localChatMessages.test.ts b/src/utils/__tests__/localChatMessages.test.ts
 new file mode 100644
 index 0000000..0bdbd3c
@@ -995,10 +1027,10 @@ index d07e7b2..579bd07 100644
    if (!blocks.length) return text;
 diff --git a/src/utils/localChatMessages.ts b/src/utils/localChatMessages.ts
 new file mode 100644
-index 0000000..9f3f92b
+index 0000000..0da7ecb
 --- /dev/null
 +++ b/src/utils/localChatMessages.ts
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,62 @@
 +import type {ChatMessage} from './types';
 +
 +/**
@@ -1026,11 +1058,15 @@ index 0000000..9f3f92b
 +      continue;
 +    }
 +    const role = message.role === 'assistant' ? 'assistant' : 'user';
++    const observation = text(message.content);
++    const boundedObservation = observation.length > 3600
++      ? observation.slice(0, 2800) + '\n[… shortened for local context …]\n' + observation.slice(-600)
++      : observation;
 +    const content = message.role === 'tool'
-+      ? `Tool result (${message.tool_call_id ?? 'unknown'}):\n${text(message.content)}`
++      ? `Tool result (${message.tool_call_id ?? 'unknown'}):\n${boundedObservation}`
 +      : message.content;
 +    const calls = message.tool_calls?.map(call =>
-+      `${call.function?.name ?? 'tool'}(${call.function?.arguments ?? '{}'})`).join('\n');
++      `${call.function?.name ?? 'tool'}(${(call.function?.arguments ?? '{}').slice(0, 300)})`).join('\n');
 +    const value = calls ? `${text(content)}\nTool calls:\n${calls}`.trim() : content;
 +    const previous = out[out.length - 1];
 +    if (previous?.role === role) {
