@@ -199,7 +199,9 @@ if "const explicitTools = extractToolMentions(message.text);" not in text:
     text = replace_once(
         text,
         "    let knowledgeEvidence = '';\n",
-        "    const explicitTools = extractToolMentions(message.text);\n\n    let knowledgeEvidence = '';\n",
+        "    const explicitTools = extractToolMentions(message.text);\n"
+        "    const searchingWeb = wantsWebSearch(message.text, explicitTools);\n\n"
+        "    let knowledgeEvidence = '';\n",
         f"{path}: explicit tool parse",
     )
 
@@ -208,8 +210,12 @@ text = text.replace(
     "knowledgeEvidence = await retrieveKnowledge(message.text, explicitTools);",
 )
 text = text.replace(
-    "const searchingWeb = wantsWebSearch(message.text);",
-    "const searchingWeb = wantsWebSearch(message.text, explicitTools);",
+    "      const searchingWeb = wantsWebSearch(message.text);\n",
+    "",
+)
+text = text.replace(
+    "      const searchingWeb = wantsWebSearch(message.text, explicitTools);\n",
+    "",
 )
 
 old_turn = """    const turnTalentNames = artifactExecution
@@ -290,6 +296,10 @@ text = text.replace(
     "allowedTalentNames: effectiveTalentNames,",
     "allowedTalentNames: turnTalentNames,",
 )
+if text.count("const searchingWeb =") != 1:
+    raise SystemExit(f"{path}: searchingWeb must be declared exactly once at function scope")
+if "const explicitTools = extractToolMentions(message.text);\n    const searchingWeb =" not in text:
+    raise SystemExit(f"{path}: searchingWeb is not declared next to explicitTools")
 write(path, text)
 
 # Required-tool retry correctness. A successful tool call satisfies
