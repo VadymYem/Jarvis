@@ -65,15 +65,27 @@ const dedupe = (hits: SearchHit[], max: number): SearchHit[] => {
   return out;
 };
 
+const readAttribute = (attrs: string, name: string): string => {
+  const expression = new RegExp(
+    name + '\\s*=\\s*(?:"([^"]*)"|\\'([^\\']*)\\')',
+    'i',
+  );
+  const match = expression.exec(attrs);
+  return match?.[1] ?? match?.[2] ?? '';
+};
+
 const parseDuckDuckGo = (html: string, max: number): SearchHit[] => {
   const hits: SearchHit[] = [];
-  const anchor =
-    /<a[^>]+class=["'][^"']*result__a[^"']*["'][^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  const anchor = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
   let match: RegExpExecArray | null;
-  while ((match = anchor.exec(html)) && hits.length < max * 2) {
-    const url = normalizeHref(match[1]);
+  while ((match = anchor.exec(html)) && hits.length < max * 3) {
+    const attrs = match[1];
+    const className = readAttribute(attrs, 'class');
+    if (!/(?:^|\s)result__a(?:\s|$)/i.test(className)) continue;
+    const url = normalizeHref(readAttribute(attrs, 'href'));
     const title = stripMarkup(match[2]);
     if (!url || !title) continue;
+
     const window = html.slice(anchor.lastIndex, anchor.lastIndex + 3200);
     const snippetMatch =
       /class=["'][^"']*result__snippet[^"']*["'][^>]*>([\s\S]*?)<\/(?:a|div)>/i.exec(
@@ -114,12 +126,57 @@ const parseBing = (html: string, max: number): SearchHit[] => {
   return dedupe(hits, max);
 };
 
+const xmlValue = (item: string, name: string): string => {
+  const value =
+    new RegExp('<' + name + '>([\\s\\S]*?)<\\/' + name + '>', 'i').exec(
+      item,
+    )?.[1] ?? '';
+  return stripMarkup(value.replace(/^<!\[CDATA\[|\]\]>$/g, ''));
+};
+
+export const parseRss = (body: string, maxResults: number): SearchHit[] => {
+  if (!/<rss\b/i.test(body)) {
+    throw new Error('Сервіс повернув сторінку замість RSS');
+  }
+  const items = body.match(/<item\b[^>]*>[\s\S]*?<\/item>/gi) ?? [];
+  return items
+    .slice(0, Math.min(8, Math.max(1, maxResults)))
+    .flatMap(item => {
+      const title = xmlValue(item, 'title');
+      const url = xmlValue(item, 'link');
+      if (!title || !/^https?:\/\//i.test(url)) return [];
+      return [
+        {
+          title,
+          url,
+          snippet: xmlValue(item, 'description').slice(0, 700),
+        },
+      ];
+    });
+};
+
 export class DeviceWebProvider implements SearchProvider {
   readonly id = 'device_web';
 
   async search(query: string, opts: SearchOptions): Promise<SearchHit[]> {
     const max = Math.min(8, Math.max(1, opts.maxResults));
     const failures: string[] = [];
+
+    try {
+      const feed = await fetchText(
+        'https://www.bing.com/search?format=rss&q=' + encodeURIComponent(query),
+        {
+          method: 'GET',
+          headers: {Accept: 'application/rss+xml,application/xml;q=0.9'},
+        },
+        10000,
+      );
+      const hits = parseRss(feed, max);
+      if (hits.length) return hits;
+      failures.push('Bing RSS: немає результатів');
+    } catch (error) {
+      failures.push('Bing RSS: ' + String(error));
+    }
 
     try {
       const html = await fetchText(
