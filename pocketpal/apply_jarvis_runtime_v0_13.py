@@ -397,4 +397,4 @@ text = read(path)
 if "def create_image(" not in text:
     raise SystemExit("jarvis_artifacts.create_image was not installed")
 
-print("Jarvis v0.13 overlays and runtime routing applied.")
+print("Jarvis v0.14 tool reliability overlays and runtime routing applied.")
