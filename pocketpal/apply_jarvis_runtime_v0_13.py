@@ -47,6 +47,7 @@ overlay("deviceWeb.ts", "src/services/search/providers/deviceWeb.ts")
 overlay("ArticleLibraryScreen.tsx", "src/screens/ArticleLibraryScreen.tsx")
 overlay("toolMentions.test.ts", "src/agent/__tests__/toolMentions.test.ts")
 overlay("retrieve.test.ts", "src/knowledge/__tests__/retrieve.test.ts")
+overlay("deviceWeb.test.ts", "src/services/search/providers/__tests__/deviceWeb.test.ts")
 
 # Python compatibility. A local model used create_image although older builds only
 # exported create_card; keep both APIs permanently.
