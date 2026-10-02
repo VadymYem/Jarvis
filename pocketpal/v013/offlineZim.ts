@@ -37,6 +37,7 @@ interface OfflineZimNative {
   search(query: string, limit: number): Promise<OfflineArticle[]>;
   readArticle(archiveId: string, path: string, title: string): Promise<OfflineArticleContent>;
   deleteArchive(id: string): Promise<void>;
+  removeArchive(key: string): Promise<void>;
   forgetArchive(): Promise<void>;
 }
 
@@ -56,6 +57,8 @@ export const offlineZim: OfflineZimNative = {
     Promise.reject(new Error('Offline article reader unavailable.')),
   deleteArchive: id =>
     native?.deleteArchive(id) ?? Promise.resolve(),
+  removeArchive: key =>
+    native?.removeArchive(key) ?? native?.deleteArchive(key) ?? Promise.resolve(),
   forgetArchive: () => native?.forgetArchive() ?? Promise.resolve(),
 };
 
