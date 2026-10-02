@@ -77,6 +77,8 @@ jobs:
           git apply ../pocketpal/jarvis-delivery-v0.11.patch
           python3 ../pocketpal/apply_jarvis_runtime_v0_12.py
           python3 ../pocketpal/apply_jarvis_runtime_v0_13.py
+          git apply --check ../pocketpal/jarvis-reliability-v0.15.patch
+          git apply ../pocketpal/jarvis-reliability-v0.15.patch
           git diff --check
 
       - name: Verify Jarvis Python artifact API
@@ -91,6 +93,12 @@ jobs:
           assert callable(jarvis_artifacts.create_docx)
           print("jarvis_artifacts API OK")
           PY
+
+      - name: Verify real Python artifacts and document round trips
+        run: |
+          python3 -m venv "$RUNNER_TEMP/python-verify"
+          "$RUNNER_TEMP/python-verify/bin/pip" install --disable-pip-version-check Pillow==11.0.0 pypdf==5.9.0
+          "$RUNNER_TEMP/python-verify/bin/python" pocketpal/verify_python_runtime.py jarvis-src -v
 
       - name: Add Jarvis badge to launcher artwork
         run: |
@@ -172,33 +180,37 @@ jobs:
           test -n "$aapt"
           "$apksigner" verify --verbose --print-certs "$apk" | tee "$RUNNER_TEMP/apk-signature.txt"
           grep -Fqi 'certificate SHA-256 digest: 3049195e638c8ac9b2c41be1981b895c09d6e482d4dc03fa6bb41a59f1b16efd' "$RUNNER_TEMP/apk-signature.txt"
-          "$aapt" dump badging "$apk" | grep -q "package: name='top.authorche.agent' versionCode='14' versionName='0.14.0'"
+          "$aapt" dump badging "$apk" | grep -q "package: name='top.authorche.agent' versionCode='15' versionName='0.15.0'"
           sha256sum "$apk"
           du -h "$apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: jarvis-authorai-0.14.0-pocketpal-arm64-apk
+          name: jarvis-authorai-0.15.0-pocketpal-arm64-apk
           retention-days: 30
           if-no-files-found: error
           path: jarvis-src/android/app/build/outputs/apk/prod/release/app-prod-release.apk
 
-      - name: Publish private device-test prerelease
-        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[release pocketpal v0.3.0]')
+      - name: Publish device-test prerelease
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          asset="$RUNNER_TEMP/Jarvis-AuthorAI-0.3.0-pocketpal-arm64.apk"
+          asset="$RUNNER_TEMP/Jarvis-AuthorAI-0.15.0-pocketpal-arm64.apk"
           cp jarvis-src/android/app/build/outputs/apk/prod/release/app-prod-release.apk "$asset"
-          gh release create v0.3.0-pocketpal "$asset" \
-            --target "$GITHUB_SHA" \
-            --title "Jarvis | AuthorAi 0.3.0 — PocketPal test" \
-            --notes-file pocketpal/RELEASE_NOTES.md \
-            --prerelease
+          if gh release view v0.15.0-pocketpal >/dev/null 2>&1; then
+            gh release upload v0.15.0-pocketpal "$asset" --clobber
+            gh release edit v0.15.0-pocketpal --notes-file pocketpal/RELEASE_NOTES.md
+          else
+            gh release create v0.15.0-pocketpal "$asset" \
+              --target "$GITHUB_SHA" \
+              --title "Jarvis | AuthorAi 0.15.0" \
+              --notes-file pocketpal/RELEASE_NOTES.md --prerelease
+          fi
 
-      - name: Keep only the two newest workflow runs
+      - name: Keep only the three newest workflow runs
         if: always()
         # GitHub can leave Dependabot dynamic runs queued and undeletable.
         env:

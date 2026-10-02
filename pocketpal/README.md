@@ -26,4 +26,4 @@ git apply ../pocketpal/jarvis-live.patch
 # Apply each remaining patch in the same order as the build workflow.
 ```
 
-Current device-test line: `v0.7.0-pocketpal`. The repository must remain private while repository-owned signing material is present. Wikipedia content is a separate ZIM download; it is not embedded in the APK.
+Current device-test line: `v0.15.0-pocketpal`. The final reliability patch adds the actual Android control bridge and aligns the APK version with CI. The repository must remain private while repository-owned signing material is present. Wikipedia content is a separate ZIM download; it is not embedded in the APK.
