@@ -1,6 +1,6 @@
 import {createSearchProvider} from '../services/search';
 import type {SearchProviderId} from '../services/search/types';
-import {offlineZim, formatOfflineEvidence} from './offlineZim';
+import {offlineZim, formatOfflineEvidence, type OfflineArticle} from './offlineZim';
 import {searchProviderStore} from '../store/SearchProviderStore';
 import {
   extractToolMentions,
@@ -190,7 +190,7 @@ export const retrieveKnowledge = async (
       );
     }
 
-    let articles = [];
+    let articles: OfflineArticle[] = [];
     let usedQuery = query;
     for (const candidate of offlineQueries(query)) {
       const found = await offlineZim.search(candidate, 5);
