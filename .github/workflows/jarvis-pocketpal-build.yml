@@ -172,14 +172,14 @@ jobs:
           test -n "$aapt"
           "$apksigner" verify --verbose --print-certs "$apk" | tee "$RUNNER_TEMP/apk-signature.txt"
           grep -Fqi 'certificate SHA-256 digest: 3049195e638c8ac9b2c41be1981b895c09d6e482d4dc03fa6bb41a59f1b16efd' "$RUNNER_TEMP/apk-signature.txt"
-          "$aapt" dump badging "$apk" | grep -q "package: name='top.authorche.agent' versionCode='13' versionName='0.13.0'"
+          "$aapt" dump badging "$apk" | grep -q "package: name='top.authorche.agent' versionCode='14' versionName='0.14.0'"
           sha256sum "$apk"
           du -h "$apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: jarvis-authorai-0.13.0-pocketpal-arm64-apk
+          name: jarvis-authorai-0.14.0-pocketpal-arm64-apk
           retention-days: 30
           if-no-files-found: error
           path: jarvis-src/android/app/build/outputs/apk/prod/release/app-prod-release.apk
