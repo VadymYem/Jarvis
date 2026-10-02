@@ -76,7 +76,21 @@ jobs:
           git apply --check ../pocketpal/jarvis-delivery-v0.11.patch
           git apply ../pocketpal/jarvis-delivery-v0.11.patch
           python3 ../pocketpal/apply_jarvis_runtime_v0_12.py
+          python3 ../pocketpal/apply_jarvis_runtime_v0_13.py
           git diff --check
+
+      - name: Verify Jarvis Python artifact API
+        working-directory: jarvis-src
+        run: |
+          PYTHONPATH=android/app/src/main/python python3 - <<'PY'
+          import jarvis_artifacts
+          assert callable(jarvis_artifacts.create_image)
+          assert callable(jarvis_artifacts.create_card)
+          assert callable(jarvis_artifacts.create_pdf)
+          assert callable(jarvis_artifacts.create_doc)
+          assert callable(jarvis_artifacts.create_docx)
+          print("jarvis_artifacts API OK")
+          PY
 
       - name: Add Jarvis badge to launcher artwork
         run: |
@@ -158,14 +172,14 @@ jobs:
           test -n "$aapt"
           "$apksigner" verify --verbose --print-certs "$apk" | tee "$RUNNER_TEMP/apk-signature.txt"
           grep -Fqi 'certificate SHA-256 digest: 3049195e638c8ac9b2c41be1981b895c09d6e482d4dc03fa6bb41a59f1b16efd' "$RUNNER_TEMP/apk-signature.txt"
-          "$aapt" dump badging "$apk" | grep -q "package: name='top.authorche.agent' versionCode='12' versionName='0.12.0'"
+          "$aapt" dump badging "$apk" | grep -q "package: name='top.authorche.agent' versionCode='13' versionName='0.13.0'"
           sha256sum "$apk"
           du -h "$apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: jarvis-authorai-0.12.0-pocketpal-arm64-apk
+          name: jarvis-authorai-0.13.0-pocketpal-arm64-apk
           retention-days: 30
           if-no-files-found: error
           path: jarvis-src/android/app/build/outputs/apk/prod/release/app-prod-release.apk
@@ -184,7 +198,7 @@ jobs:
             --notes-file pocketpal/RELEASE_NOTES.md \
             --prerelease
 
-      - name: Keep only the three newest workflow runs
+      - name: Keep only the two newest workflow runs
         if: always()
         # GitHub can leave Dependabot dynamic runs queued and undeletable.
         env:

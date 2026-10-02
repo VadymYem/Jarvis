@@ -35,8 +35,8 @@ while IFS=$'\t' read -r run_id status event; do
     echo "Unable to delete run $run_id (status: $status)" >&2
     failed=1
   fi
-done < <(tail -n +4 "$run_list")
+done < <(tail -n +3 "$run_list")
 
-echo "Retained newest runs: $(head -n 3 "$run_list" | cut -f1 | tr '\n' ' ')"
+echo "Retained newest runs: $(head -n 2 "$run_list" | cut -f1 | tr '\n' ' ')"
 echo "GitHub-blocked runs: $blocked"
 exit "$failed"
