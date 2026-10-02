@@ -59,7 +59,12 @@ const normalizeHref = (rawHref: string): string | null => {
   const href = decodeEntities(rawHref).trim();
   try {
     const candidate = href.startsWith('//') ? 'https:' + href : href;
-    const url = new URL(candidate, 'https://duckduckgo.com');
+    // React Native's URL implementation is not consistently compatible with
+    // the browser two-argument URL constructor. Absolute result URLs do not
+    // need a base at all; only DuckDuckGo-relative redirect URLs do.
+    const url = /^https?:\/\//i.test(candidate)
+      ? new URL(candidate)
+      : new URL(candidate, 'https://duckduckgo.com');
     if (
       url.hostname.endsWith('duckduckgo.com') &&
       (url.pathname.startsWith('/l/') || url.pathname.startsWith('/lite/'))
