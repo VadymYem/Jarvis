@@ -142,7 +142,9 @@ completion_insert = """    const turnTalentNames = artifactExecution
         ? 'required'
         : cleanCompletionParams.tool_choice ?? 'auto';
     }
-    addJarvisRuntimePrompt(cleanCompletionParams, artifactExecution);
+    if (artifactExecution) {
+      addJarvisRuntimePrompt(cleanCompletionParams, true);
+    }
 
     currentMessageInfo.current = messageInfo;
 
