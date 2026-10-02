@@ -644,6 +644,32 @@ index 86830f3..0c934b8 100644
      const value =
        isVideoCapable && promptText !== undefined
          ? promptText
+diff --git a/src/components/ChatView/ChatView.tsx b/src/components/ChatView/ChatView.tsx
+index 5602f54..4427160 100644
+--- a/src/components/ChatView/ChatView.tsx
++++ b/src/components/ChatView/ChatView.tsx
+@@ -15,7 +15,7 @@ import {
+ import dayjs from 'dayjs';
+ import {observer} from 'mobx-react';
+ import calendar from 'dayjs/plugin/calendar';
+-import {Snackbar} from 'react-native-paper';
++import {ActivityIndicator, Snackbar, Text} from 'react-native-paper';
+ import {useIsFocused} from '@react-navigation/native';
+ import {useSafeAreaInsets} from 'react-native-safe-area-context';
+ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+@@ -1142,6 +1142,12 @@ export const ChatView = observer(
+                 inputContainerAnimatedStyle,
+                 {backgroundColor: inputBackgroundColor},
+               ]}>
++              {chatSessionStore.searchingWeb && (
++                <View style={{flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 5}}>
++                  <ActivityIndicator size={14} />
++                  <Text variant="labelMedium">Пошук в інтернеті</Text>
++                </View>
++              )}
+               <BannerRow
+                 messages={messages}
+                 htmlPreviewCount={htmlPreviewCount}
 diff --git a/src/components/MarkdownView/CodeRenderer.tsx b/src/components/MarkdownView/CodeRenderer.tsx
 index c51ba43..f9d2dee 100644
 --- a/src/components/MarkdownView/CodeRenderer.tsx
@@ -710,7 +736,7 @@ index c51ba43..f9d2dee 100644
    );
  };
 diff --git a/src/hooks/useChatSession.ts b/src/hooks/useChatSession.ts
-index 48a7def..321e746 100644
+index 48a7def..ae40ba0 100644
 --- a/src/hooks/useChatSession.ts
 +++ b/src/hooks/useChatSession.ts
 @@ -1,4 +1,5 @@
@@ -753,7 +779,25 @@ index 48a7def..321e746 100644
      stop: stopWords,
    };
  
-@@ -600,6 +603,7 @@ export const useChatSession = (
+@@ -549,6 +552,8 @@ export const useChatSession = (
+ 
+     let knowledgeEvidence = '';
+     if (!message.imageUris?.length && message.text.trim().length >= 3) {
++      const searchingWeb = wantsWebSearch(message.text);
++      if (searchingWeb) chatSessionStore.setSearchingWeb(true);
+       try {
+         knowledgeEvidence = await retrieveKnowledge(message.text);
+       } catch (error) {
+@@ -558,6 +563,8 @@ export const useChatSession = (
+           return;
+         }
+         await addSystemMessage(`Локальний ZIM недоступний: ${error instanceof Error ? error.message : String(error)}`);
++      } finally {
++        if (searchingWeb) chatSessionStore.setSearchingWeb(false);
+       }
+     }
+ 
+@@ -600,6 +607,7 @@ export const useChatSession = (
        pal,
        model: modelStore.activeModel,
      });
@@ -761,7 +805,7 @@ index 48a7def..321e746 100644
  
      const {cleanCompletionParams, messageInfo} = await prepareCompletion({
        imageUris: imageUris || [],
-@@ -668,6 +672,11 @@ export const useChatSession = (
+@@ -668,6 +676,11 @@ export const useChatSession = (
        }
      }
  
@@ -773,7 +817,7 @@ index 48a7def..321e746 100644
      try {
        const events = runAgent({
          engine,
-@@ -677,6 +686,7 @@ export const useChatSession = (
+@@ -677,6 +690,7 @@ export const useChatSession = (
          triggerMarkers,
          messageId: messageInfo.id,
          signal: abortRef.current.signal,
@@ -781,7 +825,7 @@ index 48a7def..321e746 100644
        });
  
        // The chunk-cycle would otherwise run entirely via microtask
-@@ -940,6 +950,11 @@ export const useChatSession = (
+@@ -940,6 +954,11 @@ export const useChatSession = (
          await addSystemMessage(`${l10n.chat.completionFailed}${errorMessage}`);
        }
      } finally {
@@ -932,11 +976,31 @@ index 40de69c..8cdd08f 100644
      throw new Error(
        'Веб-пошук недоступний з цього підключення. ' + failures.join('; '),
      );
+diff --git a/src/store/ChatSessionStore.ts b/src/store/ChatSessionStore.ts
+index 23fae69..25860cf 100644
+--- a/src/store/ChatSessionStore.ts
++++ b/src/store/ChatSessionStore.ts
+@@ -120,6 +120,11 @@ class ChatSessionStore {
+   // `setAgentUiState`. Renderers compute the active-vs-persisted
+   // predicate at the ChatView level.
+   agentUiState: AgentUiState = initialAgentUiState;
++  searchingWeb = false;
++
++  setSearchingWeb(value: boolean) {
++    this.searchingWeb = value;
++  }
+ 
+   // Per-token counter for PendingIndicator's tool-call suffix. Lives
+   // outside `agentUiState` so broad observers (ChatView) aren't
 diff --git a/src/store/PalStore.ts b/src/store/PalStore.ts
-index e0c9eb4..6335fea 100644
+index e0c9eb4..ee96c74 100644
 --- a/src/store/PalStore.ts
 +++ b/src/store/PalStore.ts
-@@ -60,7 +60,7 @@ const JARVIS_TOOLS_V09_KEY = 'PalStore.builtin.Jarvis.tools.v09';
+@@ -57,10 +57,11 @@ const JARVIS_SEEDED_KEY = 'PalStore.builtin.Jarvis.seeded';
+ const JARVIS_TOOLS_V07_KEY = 'PalStore.builtin.Jarvis.tools.v07';
+ const JARVIS_TOOLS_V08_KEY = 'PalStore.builtin.Jarvis.tools.v08';
+ const JARVIS_TOOLS_V09_KEY = 'PalStore.builtin.Jarvis.tools.v09';
++const JARVIS_TOOLS_V11_KEY = 'PalStore.builtin.Jarvis.tools.v11';
  const JARVIS_FILE_TALENTS = ['web_search', 'read_url', 'workspace', 'python_exec', 'android_document'].map(name => ({name, necessity: 'optional' as const}));
  const JARVIS_ID_KEY = 'PalStore.builtin.Jarvis.id';
  const JARVIS_SYSTEM_PROMPT =
@@ -945,6 +1009,37 @@ index e0c9eb4..6335fea 100644
  
  class PalStore {
    private initializationPromise: Promise<void> | null = null;
+@@ -801,19 +802,20 @@ class PalStore {
+   private async initializeJarvisPal(force = false): Promise<void> {
+     try {
+       if (!force && (await AsyncStorage.getItem(JARVIS_SEEDED_KEY)) === 'true' &&
+-          (await AsyncStorage.getItem(JARVIS_TOOLS_V09_KEY)) === 'true') {
++          (await AsyncStorage.getItem(JARVIS_TOOLS_V11_KEY)) === 'true') {
+         return;
+       }
+ 
+       const existing = await this.findJarvisPal();
+       if (existing) {
+         await AsyncStorage.setItem(JARVIS_ID_KEY, existing.id);
+-        if (await AsyncStorage.getItem(JARVIS_TOOLS_V09_KEY) !== 'true') {
++        if (await AsyncStorage.getItem(JARVIS_TOOLS_V11_KEY) !== 'true') {
+           await this.updatePal(existing.id, {
+             pact: {talents: JARVIS_FILE_TALENTS},
+             ...(!existing.isSystemPromptChanged ? {systemPrompt: JARVIS_SYSTEM_PROMPT} : {}),
+           });
+           await AsyncStorage.setItem(JARVIS_TOOLS_V09_KEY, 'true');
++          await AsyncStorage.setItem(JARVIS_TOOLS_V11_KEY, 'true');
+         }
+         await AsyncStorage.setItem(JARVIS_SEEDED_KEY, 'true');
+         return;
+@@ -842,6 +844,7 @@ class PalStore {
+       await AsyncStorage.setItem(JARVIS_TOOLS_V07_KEY, 'true');
+       await AsyncStorage.setItem(JARVIS_TOOLS_V08_KEY, 'true');
+       await AsyncStorage.setItem(JARVIS_TOOLS_V09_KEY, 'true');
++      await AsyncStorage.setItem(JARVIS_TOOLS_V11_KEY, 'true');
+     } catch (error) {
+       console.error('Error initializing Jarvis agent:', error);
+     }
 diff --git a/src/utils/__tests__/localChatMessages.test.ts b/src/utils/__tests__/localChatMessages.test.ts
 new file mode 100644
 index 0000000..0bdbd3c
