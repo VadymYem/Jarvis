@@ -31,8 +31,8 @@ def overlay(source, target):
 # Version.
 path = "android/app/build.gradle"
 text = read(path)
-text, n1 = re.subn(r'(\\bversionCode\\s+)12\\b', r'\\g<1>13', text, count=1)
-text, n2 = re.subn(r'(\\bversionName\\s+)"0\\.12\\.0"', r'\\g<1>"0.13.0"', text, count=1)
+text, n1 = re.subn(r'(\bversionCode\s+)12\b', r'\g<1>13', text, count=1)
+text, n2 = re.subn(r'(\bversionName\s+)"0\.12\.0"', r'\g<1>"0.13.0"', text, count=1)
 if n1 != 1 or n2 != 1:
     raise SystemExit(f"{path}: version replacement failed ({n1=}, {n2=})")
 write(path, text)
