@@ -144,6 +144,35 @@ const parseDuckDuckGo = (html: string, max: number): SearchHit[] => {
       snippet: snippetMatch ? stripMarkup(snippetMatch[1]).slice(0, 700) : '',
     });
   }
+
+  // Compatibility fallback for the compact HTML shape used by older
+  // DuckDuckGo pages and by our original keyless-search regression fixture.
+  // Keep this separate from relevance filtering: parsing first, relevance
+  // validation second.
+  if (!hits.length) {
+    const legacy =
+      /<a[^>]+class=["'][^"']*result__a[^"']*["'][^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+    let legacyMatch: RegExpExecArray | null;
+    while (
+      (legacyMatch = legacy.exec(html)) &&
+      hits.length < max * 3
+    ) {
+      const url = normalizeHref(legacyMatch[1]);
+      const title = stripMarkup(legacyMatch[2]);
+      if (!url || !title) continue;
+      const window = html.slice(legacy.lastIndex, legacy.lastIndex + 3200);
+      const snippetMatch =
+        /class=["'][^"']*result__snippet[^"']*["'][^>]*>([\s\S]*?)<\/(?:a|div)>/i.exec(
+          window,
+        );
+      hits.push({
+        title,
+        url,
+        snippet: snippetMatch ? stripMarkup(snippetMatch[1]).slice(0, 700) : '',
+      });
+    }
+  }
+
   return dedupe(hits, max);
 };
 
