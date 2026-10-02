@@ -331,6 +331,78 @@ if "requiredToolRetryUsed" in text:
     raise SystemExit(f"{path}: stale requiredToolRetryUsed remains")
 write(path, text)
 
+# Regression test for the exact artifact-loop failure observed on device:
+# one successful required tool call must satisfy the requirement permanently,
+# so the following final text turn is accepted instead of receiving the
+# internal retry nudge again.
+path = "src/services/agent/__tests__/AgentRunner.test.ts"
+text = read(path)
+if "required tool is satisfied after one successful call" not in text:
+    test_anchor = """  it('#3 tool call but second turn yields no further tool_calls → run finishes after follow-up', async () => {
+"""
+    regression_test = """  it('required tool is satisfied after one successful call', async () => {
+    const engine = makeScriptedEngine({
+      scripts: [
+        {
+          tokens: [],
+          result: {
+            text: '',
+            content: '',
+            tool_calls: [
+              {
+                id: 'c-required',
+                type: 'function',
+                function: {name: 'calculate', arguments: '{}'},
+              },
+            ],
+          },
+        },
+        {
+          tokens: [{content: 'Artifact ready.'}],
+          result: {text: 'Artifact ready.', content: 'Artifact ready.'},
+        },
+      ],
+    });
+    const calculate = makeTalent('calculate', () => ({
+      type: 'text',
+      summary: 'Created artifacts: result.png',
+    }));
+
+    const events = await collect(
+      runAgent({
+        engine,
+        initialParams: {
+          messages: [{role: 'user', content: 'Create an artifact'}],
+          tools: [
+            {
+              type: 'function',
+              function: {
+                name: 'calculate',
+                description: 'test',
+                parameters: {type: 'object', properties: {}},
+              },
+            },
+          ],
+          tool_choice: 'required',
+        } as any,
+        allowedTalentNames: ['calculate'],
+        talentLookup: () => calculate,
+        messageId: 'msg-required',
+        triggerMarkers: [],
+      }),
+    );
+
+    expect(engine.completion).toHaveBeenCalledTimes(2);
+    expect(events.filter(e => e.type === 'tool_call_finished')).toHaveLength(1);
+    expect(events[events.length - 1].type).toBe('run_finished');
+  });
+
+"""
+    if test_anchor not in text:
+        raise SystemExit(f"{path}: AgentRunner regression-test anchor not found")
+    text = text.replace(test_anchor, regression_test + test_anchor, 1)
+write(path, text)
+
 # Drawer route and fast non-AI article reader.
 path = "src/screens/index.ts"
 text = read(path)
