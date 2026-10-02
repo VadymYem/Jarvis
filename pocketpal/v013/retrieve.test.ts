@@ -67,6 +67,18 @@ describe('Pocket knowledge retrieval', () => {
     expect(evidence).toContain('Фотосинтез');
   });
 
+  it('keeps @Вікі strictly offline even when the prompt says знайди', async () => {
+    expect(wantsWebSearch('@Вікі знайди інфо про Тараса Шевченка')).toBe(false);
+    expect(conciseQuery('@Вікі знайди інфо про Тараса Шевченка')).toBe(
+      'Тараса Шевченка',
+    );
+    const evidence = await retrieveKnowledge(
+      '@Вікі знайди інфо про Тараса Шевченка',
+    );
+    expect(offlineZim.search).toHaveBeenCalledWith('Тараса Шевченка', 5);
+    expect(evidence).toContain('Фотосинтез');
+  });
+
   it('recognizes explicit and natural-language web requests', () => {
     expect(wantsWebSearch('@Веб погода Бонн')).toBe(true);
     expect(wantsWebSearch('Знайди новини про космос')).toBe(true);
