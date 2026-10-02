@@ -237,12 +237,24 @@ new_turn = """    const forcedTalentNames = new Set<string>();
 
     const forceArtifact =
       artifactExecution || explicitTools.includes('image');
-    const turnTalentNames =
+    let turnTalentNames =
       forcedTalentNames.size > 0
         ? effectiveTalentNames.filter(name => forcedTalentNames.has(name))
         : forceArtifact
           ? effectiveTalentNames.filter(name => JARVIS_ARTIFACT_TALENTS.has(name))
           : effectiveTalentNames;
+
+    // Explicit @ routing is authoritative. @Вікі must stay offline and a
+    // host-side @Веб retrieval must not be duplicated by the model's own
+    // web_search tool, which could return a different or stale result set.
+    if (explicitTools.includes('wiki') && !explicitTools.includes('web')) {
+      turnTalentNames = turnTalentNames.filter(
+        name => name !== 'web_search' && name !== 'read_url',
+      );
+    } else if (searchingWeb) {
+      turnTalentNames = turnTalentNames.filter(name => name !== 'web_search');
+    }
+
     const runtimeTools = deriveToolSchemas(turnTalentNames);
     if (runtimeTools.length > 0) {
       cleanCompletionParams.tools = runtimeTools;
@@ -264,6 +276,45 @@ text = text.replace(
     "allowedTalentNames: effectiveTalentNames,",
     "allowedTalentNames: turnTalentNames,",
 )
+write(path, text)
+
+# Required-tool retry correctness. A successful tool call satisfies
+# tool_choice='required'; the previous v0.12 logic retried again after success,
+# which could leak the internal retry instruction into the visible answer.
+path = "src/services/agent/AgentRunner.ts"
+text = read(path)
+text = text.replace(
+    "let requiredToolRetryUsed = false;",
+    "let requiredToolRetryCount = 0;\n  let requiredToolSatisfied = false;",
+)
+text = text.replace(
+    "!requiredToolRetryUsed &&\n          initialParams.tool_choice === 'required' &&",
+    "!requiredToolSatisfied &&\n          requiredToolRetryCount < 2 &&\n          initialParams.tool_choice === 'required' &&",
+)
+text = text.replace(
+    "requiredToolRetryUsed = true;",
+    "requiredToolRetryCount += 1;",
+)
+text = text.replace(
+    "const REQUIRED_TOOL_RETRY_NUDGE =\n  'The user explicitly requested an executable artifact, but the previous response did not call a tool. Call one of the provided tools now and create the real artifact. Do not answer with prose, placeholders, or simulated files.';",
+    "const REQUIRED_TOOL_RETRY_NUDGE =\n  'Use one provided tool now. If a previous tool failed, correct the call and retry. Do not answer with prose until the required tool succeeds.';",
+)
+outcome_anchor = """      // Stop-mid-tool: if the abort fired during execution, the
+"""
+if "requiredToolSatisfied = true;" not in text:
+    outcome_insert = """      if (
+        initialParams.tool_choice === 'required' &&
+        outcomes.some(outcome => outcome.result.type !== 'error')
+      ) {
+        requiredToolSatisfied = true;
+      }
+
+"""
+    if outcome_anchor not in text:
+        raise SystemExit(f"{path}: tool outcome anchor not found")
+    text = text.replace(outcome_anchor, outcome_insert + outcome_anchor, 1)
+if "requiredToolRetryUsed" in text:
+    raise SystemExit(f"{path}: stale requiredToolRetryUsed remains")
 write(path, text)
 
 # Drawer route and fast non-AI article reader.
