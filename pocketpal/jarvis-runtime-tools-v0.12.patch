@@ -1,0 +1,164 @@
+diff --git a/android/app/build.gradle b/android/app/build.gradle
+--- a/android/app/build.gradle
++++ b/android/app/build.gradle
+@@ -87,2 +87,2 @@
+-        versionCode 11
+-        versionName "0.11.0"
++        versionCode 12
++        versionName "0.12.0"
+diff --git a/src/hooks/useChatSession.ts b/src/hooks/useChatSession.ts
+--- a/src/hooks/useChatSession.ts
++++ b/src/hooks/useChatSession.ts
+@@ -39,5 +39,6 @@
+ import {
+   collectSystemPromptFragments,
++  deriveToolSchemas,
+   seedReadUrlAllowlist,
+   talentRegistry,
+ } from '../services/talents';
+@@ -50,4 +51,50 @@
+   type AgentEvent,
+   type AgentUiState,
+ } from '../services/agent';
++
++const JARVIS_RUNTIME_TALENTS = [
++  'web_search',
++  'read_url',
++  'workspace',
++  'python_exec',
++  'android_document',
++] as const;
++const JARVIS_ARTIFACT_TALENTS = new Set([
++  'workspace',
++  'python_exec',
++  'android_document',
++]);
++
++const JARVIS_RUNTIME_PROMPT =
++  'You are Jarvis. The Android host provides real tools. When the user asks to create or edit a file, image, PDF, DOC/DOCX, HTML page, source-code project, script, chart or other artifact, use workspace/python_exec/android_document and create the real artifact. Never answer with a fake placeholder such as [image], [file] or a prose description of an artifact. For drawn images and graphics use Python/Pillow; do not claim photorealistic generation unless an actual image-generation model exists.';
++
++const wantsArtifactExecution = (text: string): boolean => {
++  const value = text.toLocaleLowerCase();
++  const action =
++    /(створ|зроб|згенер|намал|побуд|збереж|експорт|покращ|відредаг|перероб|напиш|create|generate|draw|build|save|export|improve|edit|rewrite|erstell|generier|zeichn|speicher|verbesser|bearbeit)/i.test(value);
++  const artifact =
++    /(картин|зображ|фото|файл|документ|pdf|docx?|html|сторінк|сайт|код|скрипт|програм|графік|діаграм|image|picture|file|document|page|website|code|script|program|chart|diagram|bild|datei|dokument|seite|webseite|code)/i.test(value);
++  return action && artifact;
++};
++
++const addJarvisRuntimePrompt = (
++  params: ApiCompletionParams,
++  forceArtifact: boolean,
++): void => {
++  const suffix = forceArtifact
++    ? JARVIS_RUNTIME_PROMPT +
++      ' This request explicitly requires an artifact: call a tool now; do not finish with prose only.'
++    : JARVIS_RUNTIME_PROMPT;
++  const messages = [...(params.messages ?? [])] as ChatMessage[];
++  if (messages[0]?.role === 'system') {
++    messages[0] = {
++      ...messages[0],
++      content: String(messages[0].content ?? '') + '\n\n' + suffix,
++    };
++  } else {
++    messages.unshift({role: 'system', content: suffix});
++  }
++  params.messages = messages as ApiCompletionParams['messages'];
++};
++
+ // Helper function to prepare completion parameters using OpenAI-compatible
+@@ -595,4 +642,13 @@
+       ? palStore.pals.find(p => p.id === activeSession.activePalId)
+       : null;
+ 
++    // Jarvis is a dedicated agent build: a chat must not silently lose its
++    // execution tools just because no Pal was explicitly selected. An active
++    // custom Pal still owns its own talent allowlist.
++    const configuredPalTalents = (pal?.pact?.talents ?? []).map(t => t.name);
++    const effectiveTalentNames = pal
++      ? configuredPalTalents
++      : [...JARVIS_RUNTIME_TALENTS];
++    const artifactExecution = wantsArtifactExecution(message.text);
++
+     const systemMessages = resolveSystemMessages({
+@@ -610,10 +666,20 @@
+       currentMessages,
+     });
+ 
++    const turnTalentNames = artifactExecution
++      ? effectiveTalentNames.filter(name => JARVIS_ARTIFACT_TALENTS.has(name))
++      : effectiveTalentNames;
++    const runtimeTools = deriveToolSchemas(turnTalentNames);
++    if (runtimeTools.length > 0) {
++      cleanCompletionParams.tools = runtimeTools;
++      cleanCompletionParams.tool_choice = artifactExecution
++        ? 'required'
++        : cleanCompletionParams.tool_choice ?? 'auto';
++    }
++    if (!pal || artifactExecution) {
++      addJarvisRuntimePrompt(cleanCompletionParams, artifactExecution);
++    }
++
+     currentMessageInfo.current = messageInfo;
+ 
+-    // Allowed talent names for this Pal. The runner rejects any
+-    // tool call whose function.name isn't in this list.
+-    const palTalents = (pal?.pact?.talents ?? []).map(t => t.name);
+-
+     abortRef.current = new AbortController();
+@@ -710,7 +776,7 @@
+       const events = runAgent({
+         engine,
+         initialParams: cleanCompletionParams as ApiCompletionParams,
+-        allowedTalentNames: palTalents,
++        allowedTalentNames: effectiveTalentNames,
+         talentLookup: name => talentRegistry.get(name),
+         triggerMarkers,
+         messageId: messageInfo.id,
+diff --git a/src/services/agent/AgentRunner.ts b/src/services/agent/AgentRunner.ts
+--- a/src/services/agent/AgentRunner.ts
++++ b/src/services/agent/AgentRunner.ts
+@@ -17,2 +17,4 @@
+ const BUDGET_EXHAUSTED_NUDGE =
+   '(Tool budget exhausted. Answer now using only the information gathered above; if it is insufficient, say what is missing.)';
++const REQUIRED_TOOL_RETRY_NUDGE =
++  'The user explicitly requested an executable artifact, but the previous response did not call a tool. Call one of the provided tools now and create the real artifact. Do not answer with prose, placeholders, or simulated files.';
+@@ -280,4 +282,5 @@
+   let messages = initialParams.messages;
+   let turn = 0;
+   let forceFinal = false;
++  let requiredToolRetryUsed = false;
+   // Holds the engine's CompletionResult after each turn finishes.
+@@ -450,4 +453,32 @@
+       if (!calls || calls.length === 0) {
++        // A local model can ignore tool_choice even when the host requested a
++        // required artifact call. Give it one strict retry before accepting a
++        // prose-only answer. This keeps ordinary text chats unchanged.
++        if (
++          !requiredToolRetryUsed &&
++          initialParams.tool_choice === 'required' &&
++          (initialParams.tools?.length ?? 0) > 0
++        ) {
++          requiredToolRetryUsed = true;
++          messages = [
++            ...(messages ?? []),
++            {
++              role: 'assistant',
++              content: finishedResult.content ?? finishedResult.text ?? '',
++            } as unknown as NonNullable<ApiCompletionParams['messages']>[number],
++            {
++              role: 'user',
++              content: REQUIRED_TOOL_RETRY_NUDGE,
++            } as unknown as NonNullable<ApiCompletionParams['messages']>[number],
++          ];
++          if (localModel) {
++            messages = localChatMessages(
++              messages as ChatMessage[],
++            ) as ApiCompletionParams['messages'];
++          }
++          turn += 1;
++          continue;
++        }
+         // No tools requested — final answer landed.
+         break;
+       }
