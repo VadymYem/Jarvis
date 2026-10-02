@@ -1,4 +1,4 @@
-import {filterRelevantHits, parseRss} from './deviceWeb';
+import {filterRelevantHits, parseRss} from '../deviceWeb';
 
 describe('DeviceWebProvider relevance safeguards', () => {
   it('rejects unrelated result sets instead of feeding them to the model', () => {
