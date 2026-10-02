@@ -486,6 +486,24 @@ text = text.replace(
 )
 write(path, text)
 
+# Keep the original keyless Device Web parser regression meaningful under
+# the new relevance gate. The legacy fixture queried "hello" but returned a
+# completely unrelated "Example result", which is correctly rejected now.
+# Make the fixture relevant instead of weakening production relevance checks.
+path = "src/services/search/providers/__tests__/keyless.test.ts"
+text = read(path)
+text = text.replace(
+    '>Example result</a><a class="result__snippet">Useful summary</a>',
+    '>Hello example result</a><a class="result__snippet">Useful summary</a>',
+)
+text = text.replace(
+    "title: 'Example result',",
+    "title: 'Hello example result',",
+)
+if "Hello example result" not in text:
+    raise SystemExit(f"{path}: failed to update Device Web relevance fixture")
+write(path, text)
+
 # CI regression checks: the reported import must never regress again.
 path = "android/app/src/main/python/jarvis_artifacts.py"
 text = read(path)
