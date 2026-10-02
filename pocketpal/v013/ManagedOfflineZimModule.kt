@@ -135,6 +135,21 @@ class ManagedOfflineZimModule(private val context: ReactApplicationContext) :
     }
   }
 
+  @ReactMethod fun removeArchive(key: String, promise: Promise) {
+    executor.execute {
+      try {
+        val entries = loadEntries()
+        val target = entries.firstOrNull { it.id == key || it.name == key }
+          ?: error("ZIM archive not found")
+        deleteEntryFile(target)
+        saveEntries(entries.filterNot { it.path == target.path })
+        promise.resolve(null)
+      } catch (error: Exception) {
+        promise.reject("ZIM_REMOVE", error.message, error)
+      }
+    }
+  }
+
   @ReactMethod fun deleteArchive(id: String, promise: Promise) {
     executor.execute {
       try {
