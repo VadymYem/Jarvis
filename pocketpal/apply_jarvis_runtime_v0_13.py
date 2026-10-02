@@ -238,15 +238,25 @@ new_turn = """    const forcedTalentNames = new Set<string>();
 
     const forceArtifact =
       artifactExecution || explicitTools.includes('image');
+    const explicitExecutionTool =
+      explicitTools.includes('image') ||
+      explicitTools.includes('python') ||
+      explicitTools.includes('files');
+    const explicitKnowledgeOnly =
+      !explicitExecutionTool &&
+      (explicitTools.includes('wiki') || explicitTools.includes('web'));
+
     let turnTalentNames =
       forcedTalentNames.size > 0
         ? effectiveTalentNames.filter(name => forcedTalentNames.has(name))
         : forceArtifact
           ? effectiveTalentNames.filter(name => JARVIS_ARTIFACT_TALENTS.has(name))
-          : effectiveTalentNames;
+          : explicitKnowledgeOnly
+            ? []
+            : effectiveTalentNames;
 
     // Explicit @ routing is authoritative. @Вікі must stay offline and a
-    // host-side @Веб retrieval must not be duplicated by the model's own
+    // host-side web retrieval must not be duplicated by the model's own
     // web_search tool, which could return a different or stale result set.
     if (explicitTools.includes('wiki') && !explicitTools.includes('web')) {
       turnTalentNames = turnTalentNames.filter(
@@ -263,6 +273,9 @@ new_turn = """    const forcedTalentNames = new Set<string>();
         forcedTalentNames.size > 0 || forceArtifact
           ? 'required'
           : cleanCompletionParams.tool_choice ?? 'auto';
+    } else if (explicitKnowledgeOnly) {
+      cleanCompletionParams.tools = undefined;
+      cleanCompletionParams.tool_choice = undefined;
     }
     if (forceArtifact) {
       addJarvisRuntimePrompt(cleanCompletionParams, true);
