@@ -67,7 +67,7 @@ const dedupe = (hits: SearchHit[], max: number): SearchHit[] => {
 
 const readAttribute = (attrs: string, name: string): string => {
   const expression = new RegExp(
-    name + '\\s*=\\s*(?:"([^"]*)"|\\'([^\\']*)\\')',
+    `${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`,
     'i',
   );
   const match = expression.exec(attrs);
