@@ -59,12 +59,18 @@ const normalizeHref = (rawHref: string): string | null => {
   const href = decodeEntities(rawHref).trim();
   try {
     const candidate = href.startsWith('//') ? 'https:' + href : href;
-    // React Native's URL implementation is not consistently compatible with
-    // the browser two-argument URL constructor. Absolute result URLs do not
-    // need a base at all; only DuckDuckGo-relative redirect URLs do.
-    const url = /^https?:\/\//i.test(candidate)
-      ? new URL(candidate)
-      : new URL(candidate, 'https://duckduckgo.com');
+
+    // Most result links are already absolute. Return non-DuckDuckGo URLs
+    // directly so parsing does not depend on React Native/Jest URL polyfills.
+    // DuckDuckGo redirect links still need query-param extraction below.
+    if (
+      /^https?:\/\//i.test(candidate) &&
+      !/^https?:\/\/(?:[^/]+\.)?duckduckgo\.com\//i.test(candidate)
+    ) {
+      return candidate;
+    }
+
+    const url = new URL(candidate, 'https://duckduckgo.com');
     if (
       url.hostname.endsWith('duckduckgo.com') &&
       (url.pathname.startsWith('/l/') || url.pathname.startsWith('/lite/'))
