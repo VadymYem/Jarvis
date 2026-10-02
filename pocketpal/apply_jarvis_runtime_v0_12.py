@@ -199,7 +199,8 @@ new_no_calls = """      if (!calls || calls.length === 0) {
         if (
           !requiredToolRetryUsed &&
           initialParams.tool_choice === 'required' &&
-          (initialParams.tools?.length ?? 0) > 0
+          Array.isArray(initialParams.tools) &&
+          initialParams.tools.length > 0
         ) {
           requiredToolRetryUsed = true;
           messages = [
