@@ -75,8 +75,7 @@ jobs:
           git apply ../pocketpal/jarvis-v0.10-message-tests.patch
           git apply --check ../pocketpal/jarvis-delivery-v0.11.patch
           git apply ../pocketpal/jarvis-delivery-v0.11.patch
-          git apply --check ../pocketpal/jarvis-runtime-tools-v0.12.patch
-          git apply ../pocketpal/jarvis-runtime-tools-v0.12.patch
+          python3 ../pocketpal/apply_jarvis_runtime_v0_12.py
           git diff --check
 
       - name: Add Jarvis badge to launcher artwork
