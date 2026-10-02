@@ -1,0 +1,21 @@
+name: Remove obsolete Jarvis branch
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/prune-old-jarvis-branch.yml'
+permissions:
+  contents: write
+jobs:
+  remove-obsolete-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ref="heads/codex/zim-web-image-v0.9"
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/${ref}" >/dev/null 2>&1; then
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/${ref}"
+          fi
