@@ -75,6 +75,8 @@ jobs:
           git apply ../pocketpal/jarvis-v0.10-message-tests.patch
           git apply --check ../pocketpal/jarvis-delivery-v0.11.patch
           git apply ../pocketpal/jarvis-delivery-v0.11.patch
+          git apply --check ../pocketpal/jarvis-runtime-tools-v0.12.patch
+          git apply ../pocketpal/jarvis-runtime-tools-v0.12.patch
           git diff --check
 
       - name: Add Jarvis badge to launcher artwork
@@ -157,14 +159,14 @@ jobs:
           test -n "$aapt"
           "$apksigner" verify --verbose --print-certs "$apk" | tee "$RUNNER_TEMP/apk-signature.txt"
           grep -Fqi 'certificate SHA-256 digest: 3049195e638c8ac9b2c41be1981b895c09d6e482d4dc03fa6bb41a59f1b16efd' "$RUNNER_TEMP/apk-signature.txt"
-          "$aapt" dump badging "$apk" | grep -q "package: name='top.authorche.agent' versionCode='11' versionName='0.11.0'"
+          "$aapt" dump badging "$apk" | grep -q "package: name='top.authorche.agent' versionCode='12' versionName='0.12.0'"
           sha256sum "$apk"
           du -h "$apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: jarvis-authorai-0.11.0-pocketpal-arm64-apk
+          name: jarvis-authorai-0.12.0-pocketpal-arm64-apk
           retention-days: 30
           if-no-files-found: error
           path: jarvis-src/android/app/build/outputs/apk/prod/release/app-prod-release.apk
