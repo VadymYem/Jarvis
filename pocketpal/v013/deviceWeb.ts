@@ -6,8 +6,32 @@ const WEB_HEADERS = {
   Accept:
     'text/html,application/xhtml+xml,application/rss+xml,application/xml;q=0.9,*/*;q=0.8',
   'Accept-Language': 'uk-UA,uk;q=0.9,en;q=0.8,de;q=0.6',
-  'Cache-Control': 'no-cache',
+  'Cache-Control': 'no-cache, no-store, max-age=0',
+  Pragma: 'no-cache',
 };
+
+const STOP_WORDS = new Set([
+  'про',
+  'для',
+  'та',
+  'і',
+  'й',
+  'або',
+  'the',
+  'and',
+  'for',
+  'with',
+  'von',
+  'und',
+  'der',
+  'die',
+  'das',
+  'людину',
+  'людина',
+  'інфо',
+  'інформацію',
+  'інформація',
+]);
 
 const decodeEntities = (value: string): string =>
   value
@@ -63,6 +87,29 @@ const dedupe = (hits: SearchHit[], max: number): SearchHit[] => {
     if (out.length >= max) break;
   }
   return out;
+};
+
+const tokens = (value: string): string[] =>
+  (value.toLocaleLowerCase().match(/[\p{L}\p{N}_-]{3,}/gu) ?? [])
+    .map(token => token.replace(/^[-_]+|[-_]+$/g, ''))
+    .filter(token => token.length >= 3 && !STOP_WORDS.has(token));
+
+export const filterRelevantHits = (
+  query: string,
+  hits: SearchHit[],
+  max: number,
+): SearchHit[] => {
+  const queryTokens = Array.from(new Set(tokens(query)));
+  if (!queryTokens.length) return dedupe(hits, max);
+
+  const filtered = hits.filter(hit => {
+    const haystack = `${hit.title} ${hit.snippet} ${hit.url}`.toLocaleLowerCase();
+    const matched = queryTokens.filter(token => haystack.includes(token));
+    if (!matched.length) return false;
+    if (matched.some(token => token.length >= 6)) return true;
+    return queryTokens.length <= 2 || matched.length >= 2;
+  });
+  return dedupe(filtered, max);
 };
 
 const readAttribute = (attrs: string, name: string): string => {
@@ -155,6 +202,21 @@ export const parseRss = (body: string, maxResults: number): SearchHit[] => {
     });
 };
 
+const accept = (
+  source: string,
+  query: string,
+  hits: SearchHit[],
+  max: number,
+  failures: string[],
+): SearchHit[] => {
+  const clean = filterRelevantHits(query, hits, max);
+  if (clean.length) return clean;
+  failures.push(
+    `${source}: ${hits.length ? 'відхилено нерелевантні результати' : 'немає результатів'}`,
+  );
+  return [];
+};
+
 export class DeviceWebProvider implements SearchProvider {
   readonly id = 'device_web';
 
@@ -162,31 +224,22 @@ export class DeviceWebProvider implements SearchProvider {
     const max = Math.min(8, Math.max(1, opts.maxResults));
     const failures: string[] = [];
 
-    try {
-      const feed = await fetchText(
-        'https://www.bing.com/search?format=rss&q=' + encodeURIComponent(query),
-        {
-          method: 'GET',
-          headers: {Accept: 'application/rss+xml,application/xml;q=0.9'},
-        },
-        10000,
-      );
-      const hits = parseRss(feed, max);
-      if (hits.length) return hits;
-      failures.push('Bing RSS: немає результатів');
-    } catch (error) {
-      failures.push('Bing RSS: ' + String(error));
-    }
-
+    // Prefer regular result pages. Bing RSS is useful as a last fallback, but
+    // has been observed to return stale/unrelated feeds on some mobile paths.
     try {
       const html = await fetchText(
         'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query),
         {method: 'GET', headers: WEB_HEADERS},
         10000,
       );
-      const hits = parseDuckDuckGo(html, max);
+      const hits = accept(
+        'DuckDuckGo HTML',
+        query,
+        parseDuckDuckGo(html, max * 2),
+        max,
+        failures,
+      );
       if (hits.length) return hits;
-      failures.push('DuckDuckGo HTML: немає результатів');
     } catch (error) {
       failures.push('DuckDuckGo HTML: ' + String(error));
     }
@@ -198,28 +251,65 @@ export class DeviceWebProvider implements SearchProvider {
         {method: 'GET', headers: WEB_HEADERS},
         10000,
       );
-      const hits = parseBing(html, max);
+      const hits = accept(
+        'Bing HTML',
+        query,
+        parseBing(html, max * 2),
+        max,
+        failures,
+      );
       if (hits.length) return hits;
-      failures.push('Bing HTML: немає результатів');
     } catch (error) {
       failures.push('Bing HTML: ' + String(error));
     }
 
     if (Platform.OS === 'android' && NativeModules.BackgroundWebSearchModule) {
       try {
-        const hits = (await NativeModules.BackgroundWebSearchModule.search(
+        const raw = (await NativeModules.BackgroundWebSearchModule.search(
           query,
         )) as SearchHit[];
-        const clean = dedupe(hits, max);
-        if (clean.length) return clean;
-        failures.push('Android browser: немає результатів');
+        const hits = accept(
+          'Android browser',
+          query,
+          raw,
+          max,
+          failures,
+        );
+        if (hits.length) return hits;
       } catch (error) {
         failures.push('Android browser: ' + String(error));
       }
     }
 
+    try {
+      const feed = await fetchText(
+        'https://www.bing.com/search?format=rss&setlang=uk-UA&q=' +
+          encodeURIComponent(query),
+        {
+          method: 'GET',
+          headers: {
+            Accept: 'application/rss+xml,application/xml;q=0.9',
+            'Cache-Control': 'no-cache, no-store, max-age=0',
+            Pragma: 'no-cache',
+          },
+        },
+        10000,
+      );
+      const hits = accept(
+        'Bing RSS',
+        query,
+        parseRss(feed, max * 2),
+        max,
+        failures,
+      );
+      if (hits.length) return hits;
+    } catch (error) {
+      failures.push('Bing RSS: ' + String(error));
+    }
+
     throw new Error(
-      'Веб-пошук недоступний з цього підключення. ' + failures.join('; '),
+      'Веб-пошук недоступний або повернув нерелевантні результати. ' +
+        failures.join('; '),
     );
   }
 }
