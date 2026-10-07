@@ -195,7 +195,7 @@ jobs:
           path: jarvis-src/android/app/build/outputs/apk/prod/release/app-prod-release.apk
 
       - name: Publish device-test prerelease
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

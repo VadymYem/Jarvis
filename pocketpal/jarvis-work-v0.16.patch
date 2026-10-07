@@ -214,29 +214,36 @@ index 32c9683..7ef4e72 100644
 +  }
  }
 diff --git a/android/app/src/main/java/top/authorche/agent/JarvisTaskService.kt b/android/app/src/main/java/top/authorche/agent/JarvisTaskService.kt
-index 5fe0d30..73734ce 100644
+index 5fe0d30..82fa4f7 100644
 --- a/android/app/src/main/java/top/authorche/agent/JarvisTaskService.kt
 +++ b/android/app/src/main/java/top/authorche/agent/JarvisTaskService.kt
-@@ -1,34 +1,64 @@
+@@ -1,34 +1,73 @@
  package top.authorche.agent
  
 -import android.app.Notification
  import android.app.NotificationChannel
  import android.app.NotificationManager
+-import android.app.Service
 +import android.app.PendingIntent
- import android.app.Service
  import android.content.Intent
- import android.os.Build
- import android.os.IBinder
+-import android.os.Build
+-import android.os.IBinder
 +import android.os.PowerManager
  import androidx.core.app.NotificationCompat
++import com.facebook.react.HeadlessJsTaskService
++import com.facebook.react.bridge.Arguments
++import com.facebook.react.jstasks.HeadlessJsTaskConfig
  
 -/** Holds the running React Native agent process in foreground while a task runs. */
-+/** User-initiated inference and tools, independent of the display wake state. */
- class JarvisTaskService : Service() {
-+  private var wakeLock: PowerManager.WakeLock? = null
-   override fun onBind(intent: Intent?): IBinder? = null
+-class JarvisTaskService : Service() {
+-  override fun onBind(intent: Intent?): IBinder? = null
 -
++/** User-initiated inference and tools, independent of the display wake state. */
++class JarvisTaskService : HeadlessJsTaskService() {
++  private var wakeLock: PowerManager.WakeLock? = null
++  private var backgroundStarted = false
++  override fun getTaskConfig(intent: Intent?): HeadlessJsTaskConfig? =
++    HeadlessJsTaskConfig("JarvisBackground", Arguments.createMap(), 6 * 60 * 60 * 1000L, true)
    override fun onCreate() {
      super.onCreate()
 -    val notifications = getSystemService(NotificationManager::class.java)
@@ -274,6 +281,12 @@ index 5fe0d30..73734ce 100644
 +        acquire(6 * 60 * 60 * 1000L)
 +      }
 +    }
++    if (!backgroundStarted) {
++      backgroundStarted = true
++      // Mark a Headless JS task active so RN timers keep running while Activity
++      // is paused. CPU wake locks alone do not keep the JS timer loop alive.
++      super.onStartCommand(intent, flags, startId)
++    }
 +    // A killed JS VM cannot safely replay a partly completed tool. The journal
 +    // exposes an explicit resume rather than a notification-only zombie restart.
      return START_NOT_STICKY
@@ -283,6 +296,7 @@ index 5fe0d30..73734ce 100644
 +    stopSelf()
 +  }
 +  override fun onDestroy() {
++    sendBroadcast(Intent(ACTION_CANCEL).setPackage(packageName))
 +    if (wakeLock?.isHeld == true) wakeLock?.release()
 +    wakeLock = null
 +    super.onDestroy()
@@ -1860,22 +1874,23 @@ index a29167b..be7919d 100644
    engine: CompletionEngine;
 diff --git a/src/services/agent/__tests__/WorkRunner.test.ts b/src/services/agent/__tests__/WorkRunner.test.ts
 new file mode 100644
-index 0000000..aff52c7
+index 0000000..1fd498c
 --- /dev/null
 +++ b/src/services/agent/__tests__/WorkRunner.test.ts
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,39 @@
 +import {runAgent} from '../AgentRunner';
 +import type {CompletionEngine, CompletionResult} from '../../../utils/completionTypes';
-+import type {TalentEngine} from '../../talents/types';
++import type {AgentEvent} from '../AgentRunner.types';
++import type {TalentResult, TalentEngine} from '../../talents/types';
 +const call = (name: string, args: unknown): CompletionResult => ({text: '', content: '', tool_calls: [{id: 'a', type: 'function', function: {name, arguments: JSON.stringify(args)}}]});
 +function scripted(results: CompletionResult[]): CompletionEngine { return {completion: jest.fn(async () => results.shift() ?? {text: 'Готово', content: 'Готово'}), stopCompletion: jest.fn(async () => {})}; }
 +function handlers(fail = false): Record<string, TalentEngine> {
 +  return {
-+    workspace: {name: 'workspace', execute: jest.fn(async () => ({type: 'text', summary: 'JARVIS_ARTIFACTS_JSON:[{"path":"app.py"}]'})), toToolDefinition: () => ({type: 'function', function: {name: 'workspace', description: 'Files', parameters: {}}})},
-+    work_verify: {name: 'work_verify', execute: jest.fn(async () => fail ? {type: 'error', summary: 'Синтаксична помилка', errorMessage: 'SyntaxError'} : {type: 'text', summary: 'JARVIS_WORK_VERIFICATION_JSON:{"passed":true}'}), toToolDefinition: () => ({type: 'function', function: {name: 'work_verify', description: 'Checks', parameters: {}}})},
++    workspace: {name: 'workspace', execute: jest.fn(async (): Promise<TalentResult> => ({type: 'text', summary: 'JARVIS_ARTIFACTS_JSON:[{"path":"app.py"}]'})), toToolDefinition: () => ({type: 'function', function: {name: 'workspace', description: 'Files', parameters: {}}})},
++    work_verify: {name: 'work_verify', execute: jest.fn(async (): Promise<TalentResult> => fail ? {type: 'error', summary: 'Синтаксична помилка', errorMessage: 'SyntaxError'} : {type: 'text', summary: 'JARVIS_WORK_VERIFICATION_JSON:{"passed":true}'}), toToolDefinition: () => ({type: 'function', function: {name: 'work_verify', description: 'Checks', parameters: {}}})},
 +  };
 +}
-+const collect = async (options: Parameters<typeof runAgent>[0]) => { const events = []; for await (const event of runAgent(options)) events.push(event); return events; };
++const collect = async (options: Parameters<typeof runAgent>[0]) => { const events: AgentEvent[] = []; for await (const event of runAgent(options)) events.push(event); return events; };
 +describe('Work completion contract', () => {
 +  it('automatically checks real files before accepting final model prose', async () => {
 +    const tools = handlers();
@@ -2340,14 +2355,27 @@ index 0000000..e6eab11
 +});
 diff --git a/src/work/WorkRuntime.ts b/src/work/WorkRuntime.ts
 new file mode 100644
-index 0000000..8f333f0
+index 0000000..fe4a41a
 --- /dev/null
 +++ b/src/work/WorkRuntime.ts
-@@ -0,0 +1,4 @@
-+import {DeviceEventEmitter} from 'react-native';
+@@ -0,0 +1,17 @@
++import {AppRegistry, DeviceEventEmitter} from 'react-native';
 +let active: AbortController | null = null;
++const backgroundWaiters = new Set<() => void>();
 +DeviceEventEmitter.addListener('jarvisTaskStop', () => active?.abort());
-+export function setTaskAbort(controller: AbortController | null): void { active = controller; }
++// This task holds the RN background lifecycle open; the existing agent run
++// performs the work once. There is no polling or second model instance.
++AppRegistry.registerHeadlessTask('JarvisBackground', () => async () => {
++  if (!active) return;
++  await new Promise<void>(resolve => backgroundWaiters.add(resolve));
++});
++export function setTaskAbort(controller: AbortController | null): void {
++  active = controller;
++  if (!controller) {
++    backgroundWaiters.forEach(resolve => resolve());
++    backgroundWaiters.clear();
++  }
++}
 diff --git a/src/work/WorkStore.ts b/src/work/WorkStore.ts
 new file mode 100644
 index 0000000..5b0834f
