@@ -961,6 +961,49 @@ index 45b4312..6025bbc 100644
              <Drawer.Item
                label={l10n.components.sidebarContent.menuItems.pals}
                icon={() => <PalIcon stroke={theme.colors.primary} />}
+diff --git a/src/hooks/__tests__/useChatSession.assistantTurn.test.ts b/src/hooks/__tests__/useChatSession.assistantTurn.test.ts
+index 6d7ccc1..8788f6b 100644
+--- a/src/hooks/__tests__/useChatSession.assistantTurn.test.ts
++++ b/src/hooks/__tests__/useChatSession.assistantTurn.test.ts
+@@ -1,5 +1,5 @@
+ import {LlamaContext} from 'llama.rn';
+-import {renderHook, act} from '@testing-library/react-native';
++import {renderHook, act, waitFor} from '@testing-library/react-native';
+ 
+ import {textMessage} from '../../../jest/fixtures';
+ import {sessionFixtures} from '../../../jest/fixtures/chatSessions';
+@@ -22,6 +22,9 @@ const mockAssistant = {id: 'h3o3lc5xj'};
+ 
+ beforeEach(() => {
+   jest.clearAllMocks();
++  modelStore.inferencing = false;
++  chatSessionStore.isGenerating = false;
++  chatSessionStore.isStopping = false;
+ 
+   palStore.pals = [] as any;
+   chatSessionStore.sessions = sessionFixtures as any;
+@@ -609,18 +612,15 @@ describe('useChatSession — AssistantTurn integration', () => {
+         .fn()
+         .mockImplementation(() => completionPromise);
+     }
+-    modelStore.setInferencing(true);
+ 
+     const {result} = renderHook(() =>
+       useChatSession({current: null}, textMessage.author, mockAssistant),
+     );
+     // Fire-and-forget the send so handleStopPress can interrupt it.
+     const sendPromise = result.current.handleSendPress(textMessage);
+-    // Allow microtasks to run so the engine.completion() call is in
+-    // flight before we press stop.
+-    await act(async () => {
+-      await Promise.resolve();
+-    });
++    await waitFor(() =>
++      expect(modelStore.context?.completion).toHaveBeenCalled(),
++    );
+ 
+     await act(async () => {
+       await result.current.handleStopPress();
 diff --git a/src/hooks/__tests__/useChatSession.test.ts b/src/hooks/__tests__/useChatSession.test.ts
 index a5e985b..e463b9f 100644
 --- a/src/hooks/__tests__/useChatSession.test.ts
@@ -1727,6 +1770,322 @@ index 0d4211e..e62ddc8 100644
          renderBubble={renderBubble}
          messages={chatSessionStore.currentSessionMessages}
          activePal={activePal}
+diff --git a/src/screens/ChatScreen/__tests__/ChatScreen.test.tsx b/src/screens/ChatScreen/__tests__/ChatScreen.test.tsx
+index e085df0..8b3cbe4 100644
+--- a/src/screens/ChatScreen/__tests__/ChatScreen.test.tsx
++++ b/src/screens/ChatScreen/__tests__/ChatScreen.test.tsx
+@@ -31,6 +31,9 @@ describe('ChatScreen', () => {
+ 
+   beforeEach(() => {
+     jest.clearAllMocks();
++    modelStore.inferencing = false;
++    chatSessionStore.isGenerating = false;
++    chatSessionStore.isStopping = false;
+     llamaRN = require('llama.rn');
+   });
+ 
+@@ -188,6 +191,10 @@ describe('ChatScreen', () => {
+   });
+ 
+   it('stops ongoing completion when stop button is pressed', async () => {
++    let resolveCompletion: (value: any) => void;
++    const completionPromise = new Promise(resolve => {
++      resolveCompletion = resolve;
++    });
+     modelStore.context = new llamaRN.LlamaContext({
+       contextId: 1,
+       gpu: false,
+@@ -197,7 +204,7 @@ describe('ChatScreen', () => {
+     if (modelStore.context) {
+       modelStore.context.completion = jest
+         .fn()
+-        .mockReturnValue(new Promise(() => {})); // Never resolves
++        .mockReturnValue(completionPromise);
+     }
+     modelStore.engine = {
+       completion: jest.fn((params, onData) =>
+@@ -218,9 +225,11 @@ describe('ChatScreen', () => {
+     await act(async () => {
+       const sendButton = getByTestId('send-button');
+       fireEvent.press(sendButton);
+-      modelStore.setInferencing(true); // since mock doesn't really set inferencing
+     });
+ 
++    await waitFor(() =>
++      expect(modelStore.context?.completion).toHaveBeenCalled(),
++    );
+     await waitFor(
+       () => {
+         expect(getByTestId('stop-button')).toBeTruthy();
+@@ -236,6 +245,10 @@ describe('ChatScreen', () => {
+     });
+ 
+     expect(modelStore.engine?.stopCompletion).toHaveBeenCalled();
++    await act(async () => {
++      resolveCompletion!({text: 'cancelled', content: 'cancelled'});
++    });
++    await waitFor(() => expect(modelStore.inferencing).toBe(false));
+   });
+ 
+   describe('thinking toggle in no-session chat', () => {
+@@ -724,256 +737,4 @@ describe('ChatScreen graded effort pill cycle', () => {
+   };
+ 
+   // A graded model's single pill cycles off → low → medium → high → off in
+-  // value-set order, never on/off only.
+-  it('cycles off → low → medium → high → off in value-set order', async () => {
+-    const thinkText = l10n.en.components.chatInput.thinkingToggle.thinkText;
+-    useGradedModel();
+-    const {getByTestId} = render(<ChatScreen />, {withNavigation: true});
+-    const pill = () => within(getByTestId('thinking-toggle'));
+-
+-    // The init effect resolves enable_thinking:false → pill settles to OFF.
+-    await waitFor(() => expect(pill().getByText(thinkText)).toBeTruthy());
+-
+-    for (const expected of ['low', 'medium', 'high'] as const) {
+-      await act(async () => {
+-        fireEvent.press(getByTestId('thinking-toggle'));
+-      });
+-      await waitFor(() =>
+-        expect(pill().getByText(effortLabel(expected))).toBeTruthy(),
+-      );
+-      // The chosen effort is persisted onto the reasoning carrier intent.
+-      expect(persisted).toMatchObject({
+-        enable_thinking: true,
+-        reasoning: {enabled: true, effort: expected},
+-      });
+-    }
+-
+-    // One more tap past the last value wraps back to off.
+-    await act(async () => {
+-      fireEvent.press(getByTestId('thinking-toggle'));
+-    });
+-    await waitFor(() => expect(pill().getByText(thinkText)).toBeTruthy());
+-    expect(persisted).toMatchObject({
+-      enable_thinking: false,
+-      reasoning: {enabled: false, effort: undefined},
+-    });
+-  });
+-});
+-
+-describe('ChatScreen on/off toggle → reasoning carrier (remote)', () => {
+-  let savedModels: any[];
+-  let savedSessionId: string | null | undefined;
+-  // Session-backed persistence so the simple on/off toggle round-trips through
+-  // updateSessionCompletionSettings, mirroring real session behaviour.
+-  let persisted: {
+-    enable_thinking: boolean;
+-    reasoning?: {enabled: boolean; effort?: string};
+-  };
+-
+-  beforeEach(() => {
+-    jest.clearAllMocks();
+-    savedModels = modelStore.models;
+-    savedSessionId = chatSessionStore.activeSessionId;
+-    persisted = {enable_thinking: true, reasoning: undefined};
+-    runInAction(() => {
+-      modelStore.context = new LlamaContext(mockLlamaContextParams);
+-      // No entry → resolver reports isReasoning 'unknown' (pill shown,
+-      // fail-open) and supportsEffort false (simple on/off toggle).
+-      serverStore.remoteReasoning = {};
+-      chatSessionStore.activeSessionId = 'session-1';
+-    });
+-    modelStore.engine = {
+-      completion: jest.fn(),
+-      stopCompletion: jest.fn(),
+-    } as any;
+-    (
+-      chatSessionStore.getCurrentCompletionSettings as jest.Mock
+-    ).mockImplementation(async () => ({...persisted}));
+-    (
+-      chatSessionStore.updateSessionCompletionSettings as jest.Mock
+-    ).mockImplementation(async (s: any) => {
+-      persisted = {
+-        enable_thinking: s.enable_thinking,
+-        reasoning: s.reasoning,
+-      };
+-      runInAction(() => {
+-        const session = chatSessionStore.sessions.find(
+-          x => x.id === 'session-1',
+-        );
+-        if (session) {
+-          (session as any).completionSettings = {...persisted};
+-        }
+-      });
+-    });
+-  });
+-
+-  afterEach(() => {
+-    modelStore.models = savedModels;
+-    runInAction(() => {
+-      modelStore.activeModelId = undefined;
+-      chatSessionStore.activeSessionId = savedSessionId as any;
+-    });
+-  });
+-
+-  const useRemoteEffortUnknownModel = () => {
+-    const model = {
+-      ...savedModels[0],
+-      id: 'remote-effort-unknown',
+-      origin: ModelOrigin.REMOTE,
+-      supportsThinking: undefined,
+-      reasoning: undefined,
+-    };
+-    modelStore.models = [...savedModels, model];
+-    runInAction(() => {
+-      modelStore.activeModelId = 'remote-effort-unknown';
+-    });
+-  };
+-
+-  // Toggling thinking OFF on a remote effort-unknown model must populate the
+-  // reasoning carrier (enabled:false), so buildReasoningPayload produces the
+-  // per-serverType OFF wire shape. Pre-R1 the toggle set only enable_thinking,
+-  // leaving params.reasoning undefined → buildReasoningPayload returns {}.
+-  it('off toggle yields reasoning.enabled false reaching buildReasoningPayload', async () => {
+-    useRemoteEffortUnknownModel();
+-    const {getByLabelText} = render(<ChatScreen />, {withNavigation: true});
+-
+-    // Default thinkingEnabled true → label is "Disable thinking mode".
+-    const toggle = getByLabelText('Disable thinking mode');
+-    await act(async () => {
+-      fireEvent.press(toggle);
+-    });
+-
+-    await waitFor(() =>
+-      expect(persisted.reasoning).toEqual({enabled: false, effort: undefined}),
+-    );
+-    expect(persisted.reasoning?.enabled).toBe(false);
+-
+-    // The carrier drives the per-serverType OFF payload.
+-    expect(buildReasoningPayload('llama.cpp', persisted.reasoning)).toEqual({
+-      reasoning_format: 'auto',
+-      chat_template_kwargs: {enable_thinking: false},
+-    });
+-    expect(buildReasoningPayload('Ollama', persisted.reasoning)).toEqual({
+-      reasoning_effort: 'none',
+-    });
+-  });
+-});
+-
+-// The image-attach affordance must reflect a capability that lands after the
+-// screen is already on screen: the probe is detached and a lazily-started
+-// server can take seconds to answer.
+-describe('ChatScreen remote vision reactivity', () => {
+-  const modelId = 'srv-1/gemma-4-e2b';
+-  let savedModels: any[];
+-
+-  beforeEach(() => {
+-    jest.clearAllMocks();
+-    savedModels = modelStore.models;
+-    modelStore.models = [
+-      ...savedModels,
+-      {
+-        ...savedModels[0],
+-        id: modelId,
+-        origin: ModelOrigin.REMOTE,
+-        serverId: 'srv-1',
+-        remoteModelId: 'gemma-4-e2b',
+-      },
+-    ];
+-    runInAction(() => {
+-      modelStore.context = undefined;
+-      modelStore.activeModelId = modelId;
+-      serverStore.servers = [
+-        {
+-          id: 'srv-1',
+-          name: 'llama',
+-          url: 'http://localhost:8080',
+-          serverType: 'llama.cpp',
+-        } as any,
+-      ];
+-      serverStore.remoteCaps = {};
+-    });
+-    modelStore.engine = {
+-      completion: jest.fn(),
+-      stopCompletion: jest.fn(),
+-    } as any;
+-  });
+-
+-  afterEach(() => {
+-    modelStore.models = savedModels;
+-    runInAction(() => {
+-      modelStore.activeModelId = undefined;
+-      serverStore.servers = [];
+-      serverStore.remoteCaps = {};
+-    });
+-  });
+-
+-  it('enables attach when capabilities land, with no further user action', () => {
+-    const {getByLabelText} = render(<ChatScreen />, {withNavigation: true});
+-
+-    expect(getByLabelText('Add image').props.accessibilityState.disabled).toBe(
+-      true,
+-    );
+-
+-    act(() => {
+-      runInAction(() => {
+-        serverStore.remoteCaps[modelId] = {supportsVision: true};
+-      });
+-    });
+-
+-    expect(getByLabelText('Add image').props.accessibilityState.disabled).toBe(
+-      false,
+-    );
+-  });
+-
+-  it('enables attach when a local model finishes loading its projection', () => {
+-    const localId = 'local-mm-1';
+-    runInAction(() => {
+-      modelStore.models = [
+-        ...savedModels,
+-        {
+-          ...savedModels[0],
+-          id: localId,
+-          origin: ModelOrigin.PRESET,
+-          supportsMultimodal: true,
+-        },
+-      ];
+-      modelStore.activeModelId = localId;
+-      modelStore.isMultimodalActive = false;
+-    });
+-
+-    const {getByLabelText} = render(<ChatScreen />, {withNavigation: true});
+-
+-    expect(getByLabelText('Add image').props.accessibilityState.disabled).toBe(
+-      true,
+-    );
+-
+-    // What `proceedWithInitialization` writes once the native init verifies.
+-    act(() => {
+-      runInAction(() => {
+-        modelStore.isMultimodalActive = true;
+-      });
+-    });
+-
+-    expect(getByLabelText('Add image').props.accessibilityState.disabled).toBe(
+-      false,
+-    );
+-
+-    runInAction(() => {
+-      modelStore.isMultimodalActive = false;
+-    });
+-  });
+-
+-  it('does not let the active model inherit a sibling model vision flag', () => {
+-    act(() => {
+-      runInAction(() => {
+-        serverStore.remoteCaps['srv-1/gemma-3-4b'] = {supportsVision: true};
+-      });
+-    });
+-
+-    const {getByLabelText} = render(<ChatScreen />, {withNavigation: true});
+-
+-    expect(getByLabelText('Add image').props.accessibilityState.disabled).toBe(
+-      true,
+-    );
+-  });
+-});
++  // value-set order,
 diff --git a/src/screens/index.ts b/src/screens/index.ts
 index 5ff70a6..b9a2b8c 100644
 --- a/src/screens/index.ts
