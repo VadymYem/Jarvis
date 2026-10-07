@@ -962,10 +962,20 @@ index 45b4312..6025bbc 100644
                label={l10n.components.sidebarContent.menuItems.pals}
                icon={() => <PalIcon stroke={theme.colors.primary} />}
 diff --git a/src/hooks/__tests__/useChatSession.test.ts b/src/hooks/__tests__/useChatSession.test.ts
-index a5e985b..1b48336 100644
+index a5e985b..e463b9f 100644
 --- a/src/hooks/__tests__/useChatSession.test.ts
 +++ b/src/hooks/__tests__/useChatSession.test.ts
-@@ -280,10 +280,12 @@ describe('useChatSession', () => {
+@@ -34,6 +34,9 @@ const mockAssistant = {
+ beforeEach(() => {
+   // Reset jest mocks' call counts without removing spies
+   jest.clearAllMocks();
++  modelStore.inferencing = false;
++  chatSessionStore.isGenerating = false;
++  chatSessionStore.isStopping = false;
+ 
+   // Reset mock stores to a known baseline between tests
+   palStore.pals = [] as any;
+@@ -280,10 +283,12 @@ describe('useChatSession', () => {
          const systemMessage = capturedMessages.find(
            msg => msg.role === 'system',
          );
@@ -981,7 +991,7 @@ index a5e985b..1b48336 100644
        }
      },
    );
-@@ -355,7 +357,7 @@ describe('useChatSession', () => {
+@@ -355,7 +360,7 @@ describe('useChatSession', () => {
      // Check that a system message was included with the rendered template
      expect(capturedMessages.some(msg => msg.role === 'system')).toBe(true);
      const systemMessage = capturedMessages.find(msg => msg.role === 'system');
@@ -990,7 +1000,7 @@ index a5e985b..1b48336 100644
        'You are Gandalf, a wizard in Middle-earth.',
      );
    });
-@@ -488,7 +490,7 @@ describe('useChatSession', () => {
+@@ -488,7 +493,7 @@ describe('useChatSession', () => {
      // Check that a system message was included with the original prompt
      expect(capturedMessages.some(msg => msg.role === 'system')).toBe(true);
      const systemMessage = capturedMessages.find(msg => msg.role === 'system');
@@ -999,7 +1009,7 @@ index a5e985b..1b48336 100644
    });
  
    describe('search grounding', () => {
-@@ -607,7 +609,7 @@ describe('useChatSession', () => {
+@@ -607,7 +612,7 @@ describe('useChatSession', () => {
          msg => msg.role === 'system',
        );
        expect(systemMessages).toHaveLength(1);
@@ -1008,45 +1018,8 @@ index a5e985b..1b48336 100644
      });
  
      it('seeds the read_url allowlist from URLs the user wrote', async () => {
-@@ -927,34 +929,4 @@ describe('useChatSession', () => {
- 
-       const finalText = 'one two three';
-       if (modelStore.context) {
--        modelStore.context.completion = jest
--          .fn()
--          .mockImplementation(async (_params, onData) => {
--            if (onData) {
--              onData({token: 'tok', content: 'one '});
--              onData({token: 'tok', content: 'one two '});
--              onData({token: 'tok', content: finalText});
--            }
--            return {
--              timings: {total: 100},
--              usage: {},
--              text: finalText,
--              content: finalText,
--              reasoning_content: '',
--            };
--          });
--      }
--
--      const {result} = renderHook(() =>
--        useChatSession({current: null}, textMessage.author, mockAssistant),
--      );
--
--      await act(async () => {
--        await result.current.handleSendPress(textMessage);
--      });
--
--      expect(ttsStore.onAssistantMessageStart).not.toHaveBeenCalled();
--      expect(ttsStore.onAssistantMessageChunk).not.toHaveBeenCalled();
--    });
--  });
--});
-+        modelStore.cont
-\ No newline at end of file
 diff --git a/src/hooks/useChatSession.ts b/src/hooks/useChatSession.ts
-index f9ce243..6994484 100644
+index f9ce243..7c284a0 100644
 --- a/src/hooks/useChatSession.ts
 +++ b/src/hooks/useChatSession.ts
 @@ -47,10 +47,17 @@ import type {ToolDefinition} from '../services/talents/types';
@@ -1098,7 +1071,7 @@ index f9ce243..6994484 100644
      stop: stopWords,
    };
  
-@@ -603,7 +610,12 @@ export const useChatSession = (
+@@ -603,7 +610,13 @@ export const useChatSession = (
      await addMessage(textMessage);
    };
  
@@ -1106,13 +1079,14 @@ index f9ce243..6994484 100644
 +  const handleSendPress = async (message: MessageType.PartialText, resumeWork = false) => {
 +    if (modelStore.inferencing || chatSessionStore.isGenerating) return;
 +    await workStore.hydrate();
++    if (modelStore.inferencing || chatSessionStore.isGenerating) return;
 +    const workEnabled = workStore.getPreferences(chatSessionStore.activeSessionId).enabled;
 +    const selectedArchives = workStore.getPreferences(chatSessionStore.activeSessionId).archiveIds;
 +    const resumeCheckpoint = resumeWork ? await workStore.readCheckpoint() : null;
      const deviceCommand = parseDeviceCommand(message.text);
      if (deviceCommand && !message.imageUris?.length) {
        await addMessage({
-@@ -629,6 +641,21 @@ export const useChatSession = (
+@@ -629,6 +642,21 @@ export const useChatSession = (
        return;
      }
  
@@ -1134,7 +1108,7 @@ index f9ce243..6994484 100644
      const imageUris = message.imageUris;
      const hasImages = !!(imageUris && imageUris.length > 0);
  
-@@ -644,6 +671,8 @@ export const useChatSession = (
+@@ -644,6 +672,8 @@ export const useChatSession = (
          knowledgeEvidence = await retrieveKnowledge(
            message.text,
            explicitTools,
@@ -1143,7 +1117,7 @@ index f9ce243..6994484 100644
          );
        } catch (error) {
          if (wantsWebSearch(message.text)) {
-@@ -675,6 +704,7 @@ export const useChatSession = (
+@@ -675,6 +705,7 @@ export const useChatSession = (
        }
      }
  
@@ -1151,7 +1125,7 @@ index f9ce243..6994484 100644
      const currentMessages = toJS(chatSessionStore.currentSessionMessages);
  
      const textMessage: MessageType.Text = {
-@@ -748,7 +778,7 @@ export const useChatSession = (
+@@ -748,7 +779,7 @@ export const useChatSession = (
        forcedTalentNames.add('workspace');
      }
  
@@ -1160,7 +1134,7 @@ index f9ce243..6994484 100644
      const explicitExecutionTool =
        explicitTools.includes('image') ||
        explicitTools.includes('python') ||
-@@ -779,7 +809,13 @@ export const useChatSession = (
+@@ -779,7 +810,13 @@ export const useChatSession = (
        turnTalentNames = turnTalentNames.filter(name => name !== 'web_search');
      }
  
@@ -1174,7 +1148,7 @@ index f9ce243..6994484 100644
      if (runtimeTools.length > 0) {
        cleanCompletionParams.tools = runtimeTools;
        cleanCompletionParams.tool_choice =
-@@ -793,10 +829,25 @@ export const useChatSession = (
+@@ -793,10 +830,25 @@ export const useChatSession = (
      if (forceArtifact) {
        addJarvisRuntimePrompt(cleanCompletionParams, true);
      }
@@ -1201,7 +1175,7 @@ index f9ce243..6994484 100644
      const completionStartTime = Date.now();
      const timeToFirstTokenMs: {value: number | null} = {value: null};
      const tts: TtsRunState = {
-@@ -826,7 +877,7 @@ export const useChatSession = (
+@@ -826,7 +878,7 @@ export const useChatSession = (
      // non-null assertion below throws TypeError on every server-mode
      // turn (caught + warned, but noisy).
      const localContext = modelStore.context;
@@ -1210,7 +1184,7 @@ index f9ce243..6994484 100644
        try {
          triggerMarkers = await triggerCacheRef.current.getMarkers(
            String(localContext.id),
-@@ -843,22 +894,33 @@ export const useChatSession = (
+@@ -843,22 +895,33 @@ export const useChatSession = (
        }
      }
  
@@ -1252,7 +1226,7 @@ index f9ce243..6994484 100644
        });
  
        // The chunk-cycle would otherwise run entirely via microtask
-@@ -933,6 +995,7 @@ export const useChatSession = (
+@@ -933,6 +996,7 @@ export const useChatSession = (
            lastYieldTs = performance.now();
          }
  
@@ -1260,7 +1234,7 @@ index f9ce243..6994484 100644
          if (event.type === 'run_failed') {
            throw event.error;
          }
-@@ -945,7 +1008,7 @@ export const useChatSession = (
+@@ -945,7 +1009,7 @@ export const useChatSession = (
          const stored = session?.messages.find(
            item => item.id === messageInfo.id,
          );
@@ -1269,7 +1243,7 @@ index f9ce243..6994484 100644
            await recoverArtifactFromAssistantText({
              prompt: message.text,
              turn: stored,
-@@ -1124,17 +1187,37 @@ export const useChatSession = (
+@@ -1124,17 +1188,37 @@ export const useChatSession = (
          await addSystemMessage(`${l10n.chat.completionFailed}${errorMessage}`);
        }
      } finally {
@@ -1312,7 +1286,7 @@ index f9ce243..6994484 100644
    };
  
    const handleResetConversation = async () => {
-@@ -1178,6 +1261,7 @@ export const useChatSession = (
+@@ -1178,6 +1262,7 @@ export const useChatSession = (
  
    return {
      handleSendPress,
