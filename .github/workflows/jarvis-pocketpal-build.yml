@@ -155,7 +155,9 @@ jobs:
 
       - name: Unit tests
         working-directory: jarvis-src
-        run: yarn test --runInBand --silent
+        run: |
+          yarn test --runInBand --silent --coverage=false src/hooks/__tests__/useChatSession.test.ts src/hooks/__tests__/useChatSession.reasoning.test.ts src/hooks/__tests__/useChatSession.assistantTurn.test.ts src/screens/ChatScreen/__tests__/ChatScreen.test.tsx src/services/agent/__tests__/AgentRunner.test.ts src/services/agent/__tests__/WorkRunner.test.ts src/agent/__tests__/StructuredToolEngine.test.ts
+          yarn test --runInBand --silent
 
       - name: Build signed arm64 APK
         working-directory: jarvis-src/android

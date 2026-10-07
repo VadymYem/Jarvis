@@ -25,6 +25,40 @@ index 0633c47..cdba689 100644
                            <Drawer.Screen
                              name={ROUTES.PALS}
                              component={gestureHandlerRootHOC(PalsScreen)}
+diff --git a/__mocks__/external/llama.rn.ts b/__mocks__/external/llama.rn.ts
+index 1eff113..246505d 100644
+--- a/__mocks__/external/llama.rn.ts
++++ b/__mocks__/external/llama.rn.ts
+@@ -4,7 +4,7 @@ class MockLlamaContext {
+   gpu: boolean;
+   reasonNoGPU: string;
+   systemInfo: string;
+-  model: {isChatTemplateSupported?: boolean};
++  model: {isChatTemplateSupported?: boolean; chatTemplates?: any};
+ 
+   constructor({
+     contextId,
+@@ -24,7 +24,9 @@ class MockLlamaContext {
+     this.gpu = gpu;
+     this.reasonNoGPU = reasonNoGPU;
+     this.systemInfo = systemInfo;
+-    this.model = model;
++    // The scripted completion mock implements native tool streaming. Expose
++    // that capability; models without native tools are tested separately.
++    this.model = {...model, chatTemplates: {jinja: {defaultCaps: {tools: true}}}};
+   }
+ 
+   loadSession = jest.fn();
+@@ -39,7 +41,8 @@ class MockLlamaContext {
+   });
+   initMultimodal = jest.fn().mockResolvedValue(true);
+   isMultimodalEnabled = jest.fn().mockResolvedValue(false);
+-  // Add other methods if needed.
++  tokenize = jest.fn(async (text: string) => ({tokens: Array.from(text, value => value.codePointAt(0)!)}));
++  detokenize = jest.fn(async (tokens: number[]) => String.fromCodePoint(...tokens));
+ }
+ 
+ export const LlamaContext = jest
 diff --git a/android/app/build.gradle b/android/app/build.gradle
 index bcf2d1a..0e6800e 100644
 --- a/android/app/build.gradle
@@ -609,6 +643,19 @@ index 0000000..7966a6c
 +            errors.append(f'{name}: {type(exc).__name__}: {exc}')
 +    return {'passed': bool(checks) and not errors, 'checks': checks, 'errors': errors,
 +            'unsupported': list(dict.fromkeys(unsupported)), 'fully_tested': bool(checks) and not errors and not unsupported}
+diff --git a/jest.config.js b/jest.config.js
+index 1026b45..29c4fef 100644
+--- a/jest.config.js
++++ b/jest.config.js
+@@ -32,7 +32,7 @@ module.exports = {
+   ],
+   testPathIgnorePatterns: ['/node_modules/', '/e2e/'],
+   moduleNameMapper: {
+-    '@react-native-async-storage/async-storage':
++    '^@react-native-async-storage/async-storage$':
+       '<rootDir>/__mocks__/external/@react-native-async-storage/async-storage.js',
+     'llama.rn': '<rootDir>/__mocks__/external/llama.rn.ts',
+     'react-native-webview':
 diff --git a/src/agent/ContextBudgetEngine.ts b/src/agent/ContextBudgetEngine.ts
 new file mode 100644
 index 0000000..05e1bbc
@@ -669,7 +716,7 @@ index 0000000..05e1bbc
 +}
 diff --git a/src/agent/StructuredToolEngine.ts b/src/agent/StructuredToolEngine.ts
 new file mode 100644
-index 0000000..db2d818
+index 0000000..92536cb
 --- /dev/null
 +++ b/src/agent/StructuredToolEngine.ts
 @@ -0,0 +1,78 @@
@@ -681,7 +728,7 @@ index 0000000..db2d818
 +
 +export function needsStructuredTools(model: {chatTemplates?: any; metadata?: Record<string, unknown>} | undefined): boolean {
 +  const templates = model?.chatTemplates?.jinja;
-+  return !(templates?.defaultCaps?.tools || templates?.defaultCaps?.toolCalls || templates?.toolUse || templates?.toolUseCaps);
++  return !(templates?.defaultCaps?.tools || templates?.defaultCaps?.toolCalls || templates?.toolUse || templates?.toolUseCaps?.tools || templates?.toolUseCaps?.toolCalls);
 +}
 +
 +export function actionSchema(tools: ToolDefinition[], required: boolean): Record<string, unknown> {
@@ -775,16 +822,20 @@ index 0000000..1a89ca2
 +}
 diff --git a/src/agent/__tests__/StructuredToolEngine.test.ts b/src/agent/__tests__/StructuredToolEngine.test.ts
 new file mode 100644
-index 0000000..27983b9
+index 0000000..4e3bdb0
 --- /dev/null
 +++ b/src/agent/__tests__/StructuredToolEngine.test.ts
-@@ -0,0 +1,30 @@
-+import {StructuredToolEngine, actionSchema} from '../StructuredToolEngine';
+@@ -0,0 +1,34 @@
++import {StructuredToolEngine, actionSchema, needsStructuredTools} from '../StructuredToolEngine';
 +import type {CompletionEngine} from '../../utils/completionTypes';
 +import type {ToolDefinition} from '../../services/talents/types';
 +const tools: ToolDefinition[] = [{type: 'function', function: {name: 'workspace', description: 'Files', parameters: {type: 'object', required: ['operation'], properties: {operation: {type: 'string', enum: ['list']}}, additionalProperties: false}}}];
 +const engine = (...answers: string[]): CompletionEngine => ({completion: jest.fn(async () => ({text: answers.shift() ?? '', content: ''})), stopCompletion: jest.fn(async () => {})});
 +describe('Structured local tool compatibility', () => {
++  it('does not mistake a disabled capability object for native tool support', () => {
++    expect(needsStructuredTools({chatTemplates: {jinja: {defaultCaps: {tools: false, toolCalls: false}, toolUse: false, toolUseCaps: {tools: false, toolCalls: false}}}})).toBe(true);
++    expect(needsStructuredTools({chatTemplates: {jinja: {defaultCaps: {tools: true}}}})).toBe(false);
++  });
 +  it('dispatches a grammar-constrained action without a native tool parser', async () => {
 +    const base = engine('{"tool":"workspace","arguments":{"operation":"list"}}');
 +    const result = await new StructuredToolEngine(base).completion({messages: [{role: 'user', content: 'Перевір файли'}], tools, tool_choice: 'required'});
@@ -910,6 +961,90 @@ index 45b4312..6025bbc 100644
              <Drawer.Item
                label={l10n.components.sidebarContent.menuItems.pals}
                icon={() => <PalIcon stroke={theme.colors.primary} />}
+diff --git a/src/hooks/__tests__/useChatSession.test.ts b/src/hooks/__tests__/useChatSession.test.ts
+index a5e985b..1b48336 100644
+--- a/src/hooks/__tests__/useChatSession.test.ts
++++ b/src/hooks/__tests__/useChatSession.test.ts
+@@ -280,10 +280,12 @@ describe('useChatSession', () => {
+         const systemMessage = capturedMessages.find(
+           msg => msg.role === 'system',
+         );
+-        expect(systemMessage.content).toBe(systemPrompt);
++        expect(systemMessage.content).toContain(systemPrompt);
+       } else {
+-        // Check that no system message was included
+-        expect(capturedMessages.some(msg => msg.role === 'system')).toBe(false);
++        // Host tool instructions remain available without a PAL prompt.
++        const system = capturedMessages.filter(msg => msg.role === 'system');
++        expect(system).toHaveLength(1);
++        expect(system[0].content).toContain('workspace');
+       }
+     },
+   );
+@@ -355,7 +357,7 @@ describe('useChatSession', () => {
+     // Check that a system message was included with the rendered template
+     expect(capturedMessages.some(msg => msg.role === 'system')).toBe(true);
+     const systemMessage = capturedMessages.find(msg => msg.role === 'system');
+-    expect(systemMessage.content).toBe(
++    expect(systemMessage.content).toContain(
+       'You are Gandalf, a wizard in Middle-earth.',
+     );
+   });
+@@ -488,7 +490,7 @@ describe('useChatSession', () => {
+     // Check that a system message was included with the original prompt
+     expect(capturedMessages.some(msg => msg.role === 'system')).toBe(true);
+     const systemMessage = capturedMessages.find(msg => msg.role === 'system');
+-    expect(systemMessage.content).toBe('You are a helpful assistant.');
++    expect(systemMessage.content).toContain('You are a helpful assistant.');
+   });
+ 
+   describe('search grounding', () => {
+@@ -607,7 +609,7 @@ describe('useChatSession', () => {
+         msg => msg.role === 'system',
+       );
+       expect(systemMessages).toHaveLength(1);
+-      expect(systemMessages[0].content).toBe('You are a research assistant.');
++      expect(systemMessages[0].content).toContain('You are a research assistant.');
+     });
+ 
+     it('seeds the read_url allowlist from URLs the user wrote', async () => {
+@@ -927,34 +929,4 @@ describe('useChatSession', () => {
+ 
+       const finalText = 'one two three';
+       if (modelStore.context) {
+-        modelStore.context.completion = jest
+-          .fn()
+-          .mockImplementation(async (_params, onData) => {
+-            if (onData) {
+-              onData({token: 'tok', content: 'one '});
+-              onData({token: 'tok', content: 'one two '});
+-              onData({token: 'tok', content: finalText});
+-            }
+-            return {
+-              timings: {total: 100},
+-              usage: {},
+-              text: finalText,
+-              content: finalText,
+-              reasoning_content: '',
+-            };
+-          });
+-      }
+-
+-      const {result} = renderHook(() =>
+-        useChatSession({current: null}, textMessage.author, mockAssistant),
+-      );
+-
+-      await act(async () => {
+-        await result.current.handleSendPress(textMessage);
+-      });
+-
+-      expect(ttsStore.onAssistantMessageStart).not.toHaveBeenCalled();
+-      expect(ttsStore.onAssistantMessageChunk).not.toHaveBeenCalled();
+-    });
+-  });
+-});
++        modelStore.cont
+\ No newline at end of file
 diff --git a/src/hooks/useChatSession.ts b/src/hooks/useChatSession.ts
 index f9ce243..6994484 100644
 --- a/src/hooks/useChatSession.ts
@@ -1872,6 +2007,35 @@ index a29167b..be7919d 100644
    requiredArtifact?: boolean;
    localModel?: boolean;
    engine: CompletionEngine;
+diff --git a/src/services/agent/__tests__/AgentRunner.test.ts b/src/services/agent/__tests__/AgentRunner.test.ts
+index 12c2133..4a6d35e 100644
+--- a/src/services/agent/__tests__/AgentRunner.test.ts
++++ b/src/services/agent/__tests__/AgentRunner.test.ts
+@@ -1076,7 +1076,7 @@ describe('runAgent', () => {
+     expect(events.filter(e => e.type === 'step_started')).toHaveLength(1);
+   });
+ 
+-  it('#17 backpressure: many tokens emitted before consumer pulls → all events delivered in order', async () => {
++  it('#17 backpressure: coalescing preserves every content delta in order', async () => {
+     const tokens: CompletionStreamData[] = [];
+     for (let i = 0; i < 100; i += 1) {
+       tokens.push({content: String(i)});
+@@ -1100,11 +1100,10 @@ describe('runAgent', () => {
+       }),
+     );
+     const tokenEvents = events.filter(e => e.type === 'token');
+-    expect(tokenEvents).toHaveLength(100);
+-    const seq = tokenEvents.map(e => (e as any).delta.content);
+-    for (let i = 0; i < 100; i += 1) {
+-      expect(seq[i]).toBe(String(i));
+-    }
++    expect(tokenEvents.length).toBeLessThan(100);
++    expect(tokenEvents.map(e => (e as any).delta.content).join('')).toBe(tokens.map(token => token.content).join(''));
++    expect(events[0].type).toBe('run_started');
++    expect(events[events.length - 1].type).toBe('run_finished');
+   });
+ 
+   it('#18 backpressure: consumer slower than producer → no event drop, no deadlock', async () => {
 diff --git a/src/services/agent/__tests__/WorkRunner.test.ts b/src/services/agent/__tests__/WorkRunner.test.ts
 new file mode 100644
 index 0000000..1fd498c
