@@ -26,4 +26,7 @@ git apply ../pocketpal/jarvis-live.patch
 # Apply each remaining patch in the same order as the build workflow.
 ```
 
-Current device-test line: `v0.15.0-pocketpal`. The final reliability patch adds the actual Android control bridge and aligns the APK version with CI. The repository must remain private while repository-owned signing material is present. Wikipedia content is a separate ZIM download; it is not embedded in the APK.
+Current device-test line: `v0.16.0-pocketpal`. The final reliability patch adds the actual Android control bridge and aligns the APK version with CI. The repository must remain private while repository-owned signing material is present. Wikipedia content is a separate ZIM download; it is not embedded in the APK.
+
+
+The v0.16 layer removes the Agent drawer screen, adds Work inside Chat, selected ZIM packs, GGUF-tokenizer context budgeting, a structured action protocol for Mamay/Gemma 3, native bounded HTTP, foreground inference with a partial wake lock, and verifiable project checks. See [WORK.md](WORK.md) for exact behavior, tests and limits.

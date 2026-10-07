@@ -13,6 +13,8 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str((source / "android/app/src/main/python").resolve()))
 import jarvis_documents
 import jarvis_runner
+import jarvis_work
+import os
 
 
 class PythonRuntimeTests(unittest.TestCase):
@@ -69,6 +71,41 @@ Path("artifacts/code.py").write_text("def hello():\\n    return 'Привіт'\\
         result = self.run_script("from pathlib import Path\nPath('note.txt').write_text('new content')")
         self.assertEqual(result["created"], ["note.txt"])
         self.assertEqual(result["artifacts"][0]["size"], 11)
+
+    def verify_work(self, paths, tests=None):
+        previous = Path.cwd()
+        try:
+            os.chdir(self.root)
+            return jarvis_work.verify(paths, tests)
+        finally:
+            os.chdir(previous)
+
+    def test_work_executes_tests_against_repaired_python(self):
+        (self.root / 'app.py').write_text('def answer(): return 1\n')
+        (self.root / 'test_app.py').write_text('import unittest\nfrom app import answer\nclass TestApp(unittest.TestCase):\n    def test_answer(self): self.assertEqual(answer(), 2)\n')
+        self.assertFalse(self.verify_work(['app.py'], ['test_app.py'])['passed'])
+        (self.root / 'app.py').write_text('def answer(): return 2\n')
+        report = self.verify_work(['app.py'], ['test_app.py'])
+        self.assertTrue(report['passed'], report)
+        self.assertTrue(report['fully_tested'])
+
+    def test_work_rejects_incomplete_and_invalid_artifacts(self):
+        (self.root / 'index.html').write_text('<html><head></head><body><img src="missing.png"></body></html>')
+        self.assertFalse(self.verify_work(['index.html'])['passed'])
+        (self.root / 'bad.py').write_text('def broken(')
+        self.assertFalse(self.verify_work(['bad.py'])['passed'])
+        self.assertFalse(self.verify_work(['../outside.txt'])['passed'])
+        self.assertFalse(self.verify_work([])['passed'])
+        (self.root / 'test_empty.py').write_text('x = 1')
+        self.assertFalse(self.verify_work(['test_empty.py'], ['test_empty.py'])['passed'])
+
+    def test_work_reports_real_artifact_checks(self):
+        result = self.run_script('from jarvis_artifacts import create_image, create_pdf, create_docx\ncreate_image("card.png", title="Їжак")\ncreate_pdf("report.pdf", "Український текст")\ncreate_docx("report.docx", "Тест")')
+        self.assertIsNone(result['error'])
+        report = self.verify_work(['card.png', 'report.pdf', 'report.docx'])
+        self.assertTrue(report['passed'], report)
+        self.assertEqual(len(report['checks']), 3)
+        self.assertFalse(report['fully_tested'])
 
     def test_text_formats_are_preserved(self):
         for extension in ("txt", "py", "html", "js", "css", "json", "csv", "md"):
