@@ -89,6 +89,13 @@ Path("artifacts/code.py").write_text("def hello():\\n    return 'Привіт'\\
         self.assertTrue(report['passed'], report)
         self.assertTrue(report['fully_tested'])
 
+    def test_python_syntax_alone_does_not_claim_functional_testing(self):
+        (self.root / 'app.py').write_text('def answer(): return 1\n')
+        report = self.verify_work(['app.py'])
+        self.assertTrue(report['passed'], report)
+        self.assertFalse(report['fully_tested'])
+        self.assertTrue(report['unsupported'])
+
     def test_work_rejects_incomplete_and_invalid_artifacts(self):
         (self.root / 'index.html').write_text('<html><head></head><body><img src="missing.png"></body></html>')
         self.assertFalse(self.verify_work(['index.html'])['passed'])

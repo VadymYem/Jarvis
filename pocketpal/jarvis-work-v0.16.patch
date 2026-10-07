@@ -202,10 +202,10 @@ index 0000000..50324da
 +  companion object { const val MAX_BYTES = 2 * 1024 * 1024 }
 +}
 diff --git a/android/app/src/main/java/top/authorche/agent/JarvisTaskModule.kt b/android/app/src/main/java/top/authorche/agent/JarvisTaskModule.kt
-index 32c9683..7ef4e72 100644
+index 32c9683..aecc70a 100644
 --- a/android/app/src/main/java/top/authorche/agent/JarvisTaskModule.kt
 +++ b/android/app/src/main/java/top/authorche/agent/JarvisTaskModule.kt
-@@ -1,25 +1,37 @@
+@@ -1,25 +1,38 @@
  package top.authorche.agent
  
 +import android.content.BroadcastReceiver
@@ -238,6 +238,7 @@ index 32c9683..7ef4e72 100644
    }
 -
    @ReactMethod fun stop(promise: Promise) {
++    JarvisTaskService.markNormalCompletion()
      context.stopService(Intent(context, JarvisTaskService::class.java))
      promise.resolve(true)
    }
@@ -248,10 +249,10 @@ index 32c9683..7ef4e72 100644
 +  }
  }
 diff --git a/android/app/src/main/java/top/authorche/agent/JarvisTaskService.kt b/android/app/src/main/java/top/authorche/agent/JarvisTaskService.kt
-index 5fe0d30..82fa4f7 100644
+index 5fe0d30..efacc67 100644
 --- a/android/app/src/main/java/top/authorche/agent/JarvisTaskService.kt
 +++ b/android/app/src/main/java/top/authorche/agent/JarvisTaskService.kt
-@@ -1,34 +1,73 @@
+@@ -1,34 +1,79 @@
  package top.authorche.agent
  
 -import android.app.Notification
@@ -276,6 +277,7 @@ index 5fe0d30..82fa4f7 100644
 +class JarvisTaskService : HeadlessJsTaskService() {
 +  private var wakeLock: PowerManager.WakeLock? = null
 +  private var backgroundStarted = false
++  @Volatile private var completedNormally = false
 +  override fun getTaskConfig(intent: Intent?): HeadlessJsTaskConfig? =
 +    HeadlessJsTaskConfig("JarvisBackground", Arguments.createMap(), 6 * 60 * 60 * 1000L, true)
    override fun onCreate() {
@@ -284,6 +286,7 @@ index 5fe0d30..82fa4f7 100644
 -    notifications.createNotificationChannel(NotificationChannel(
 -      "jarvis_tasks", "Завдання Jarvis", NotificationManager.IMPORTANCE_LOW
 -    ))
++    activeService = this
 +    getSystemService(NotificationManager::class.java).createNotificationChannel(
 +      NotificationChannel("jarvis_tasks", "Завдання Jarvis", NotificationManager.IMPORTANCE_LOW))
    }
@@ -330,12 +333,16 @@ index 5fe0d30..82fa4f7 100644
 +    stopSelf()
 +  }
 +  override fun onDestroy() {
-+    sendBroadcast(Intent(ACTION_CANCEL).setPackage(packageName))
++    // Normal cleanup must not send a delayed cancel to the next chat run.
++    if (!completedNormally) sendBroadcast(Intent(ACTION_CANCEL).setPackage(packageName))
++    if (activeService === this) activeService = null
 +    if (wakeLock?.isHeld == true) wakeLock?.release()
 +    wakeLock = null
 +    super.onDestroy()
 +  }
 +  companion object {
++    @Volatile private var activeService: JarvisTaskService? = null
++    fun markNormalCompletion() { activeService?.completedNormally = true }
 +    const val ACTION_STOP = "top.authorche.agent.STOP_TASK"
 +    const val ACTION_CANCEL = "top.authorche.agent.CANCEL_TASK"
 +  }
@@ -511,10 +518,10 @@ index 0000000..afc7bb0
 +}
 diff --git a/android/app/src/main/python/jarvis_work.py b/android/app/src/main/python/jarvis_work.py
 new file mode 100644
-index 0000000..7966a6c
+index 0000000..ad9c931
 --- /dev/null
 +++ b/android/app/src/main/python/jarvis_work.py
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,130 @@
 +"""Deterministic Work checks; each reported pass identifies an actual check."""
 +import ast
 +import json
@@ -560,6 +567,8 @@ index 0000000..7966a6c
 +            if suffix == '.py':
 +                ast.parse(path.read_text(encoding='utf-8'), filename=name)
 +                check += ', синтаксис Python'
++                if not test_files:
++                    unsupported.append(f'{name}: функціональні тести не виконано; додай unittest і передай test_files')
 +            elif suffix == '.json':
 +                json.loads(path.read_text(encoding='utf-8'))
 +                check += ', структура JSON'
@@ -889,7 +898,7 @@ index 7ef2ea4..c3edf7c 100644
                description: 'Text or base64 payload for write operations.',
 diff --git a/src/agent/toolInstructions.ts b/src/agent/toolInstructions.ts
 new file mode 100644
-index 0000000..b161266
+index 0000000..69ee267
 --- /dev/null
 +++ b/src/agent/toolInstructions.ts
 @@ -0,0 +1,23 @@
@@ -906,7 +915,7 @@ index 0000000..b161266
 +  calculate: 'Використовуй для точних обчислень; перевір одиниці та знак результату.',
 +  datetime: 'Використовуй поточну дату і часовий пояс для відносних дат.',
 +  render_html: 'Створи завершений HTML із коректною структурою і доступними елементами; перевір мобільну ширину та контраст. Не підміняй файли лише попереднім переглядом.',
-+  work_verify: 'Перевір усі створені або змінені файли, потім виконай наявні тести. Після виправлення повтори перевірку. passed підтверджує лише перелічені автоматичні перевірки; unsupported позначає неперевірені можливості.',
++  work_verify: 'Перевір усі створені або змінені файли, Для Python створи поведінкові unittest з прикладами та крайовими випадками й передай їх у test_files. Виконай наявні тести. Після виправлення повтори перевірку. passed підтверджує лише перелічені автоматичні перевірки; unsupported позначає неперевірені можливості.',
 +};
 +
 +export function toolInstructions(tools: ToolDefinition[], work = false): string {
@@ -1062,7 +1071,7 @@ index a5e985b..e463b9f 100644
  
      it('seeds the read_url allowlist from URLs the user wrote', async () => {
 diff --git a/src/hooks/useChatSession.ts b/src/hooks/useChatSession.ts
-index f9ce243..7c284a0 100644
+index f9ce243..6f2de5e 100644
 --- a/src/hooks/useChatSession.ts
 +++ b/src/hooks/useChatSession.ts
 @@ -47,10 +47,17 @@ import type {ToolDefinition} from '../services/talents/types';
@@ -1286,7 +1295,24 @@ index f9ce243..7c284a0 100644
            await recoverArtifactFromAssistantText({
              prompt: message.text,
              turn: stored,
-@@ -1124,17 +1188,37 @@ export const useChatSession = (
+@@ -957,16 +1021,8 @@ export const useChatSession = (
+         console.warn('[chat] artifact recovery failed', artifactError);
+       }
+ 
+-      modelStore.setInferencing(false);
+-      modelStore.setIsStreaming(false);
+-      chatSessionStore.setIsGenerating(false);
+-      chatSessionStore.setIsStopping(false);
+     } catch (error) {
+       console.error('Completion error:', error);
+-      modelStore.setInferencing(false);
+-      modelStore.setIsStreaming(false);
+-      chatSessionStore.setIsGenerating(false);
+-      chatSessionStore.setIsStopping(false);
+       // Reset agentUiState back to idle so renderers don't get
+       // stuck in a failed state across the next user message.
+       chatSessionStore.setAgentUiState(initialAgentUiState);
+@@ -1124,17 +1180,33 @@ export const useChatSession = (
          await addSystemMessage(`${l10n.chat.completionFailed}${errorMessage}`);
        }
      } finally {
@@ -1302,21 +1328,17 @@ index f9ce243..7c284a0 100644
        }
      }
 +    } catch (setupError) {
-+      modelStore.setInferencing(false);
-+      modelStore.setIsStreaming(false);
-+      chatSessionStore.setIsGenerating(false);
-+      chatSessionStore.setIsStopping(false);
 +      await addSystemMessage(`Не вдалося виконати завдання: ${String(setupError)}`);
 +    } finally {
-+      modelStore.setInferencing(false);
-+      modelStore.setIsStreaming(false);
-+      chatSessionStore.setIsGenerating(false);
-+      chatSessionStore.setIsStopping(false);
 +      setTaskAbort(null);
 +      modelStore.enableAutoRelease('jarvis-task');
 +      if (workBegan) await workStore.end(workDone).catch(error => console.warn('[work] journal status failed', error));
 +      if (taskStarted && Platform.OS === 'android') await NativeModules.JarvisTaskModule?.stop().catch((error: unknown) => console.warn('[work] service cleanup failed', error));
 +      try { deactivateKeepAwake(); } catch {}
++      modelStore.setInferencing(false);
++      modelStore.setIsStreaming(false);
++      chatSessionStore.setIsGenerating(false);
++      chatSessionStore.setIsStopping(false);
 +    }
 +  };
 +
@@ -1329,7 +1351,7 @@ index f9ce243..7c284a0 100644
    };
  
    const handleResetConversation = async () => {
-@@ -1178,6 +1262,7 @@ export const useChatSession = (
+@@ -1178,6 +1250,7 @@ export const useChatSession = (
  
    return {
      handleSendPress,
