@@ -1,0 +1,115 @@
+diff --git a/android/app/build.gradle b/android/app/build.gradle
+index 928f588..85e2aaa 100644
+--- a/android/app/build.gradle
++++ b/android/app/build.gradle
+@@ -87,8 +87,8 @@ android {
+         applicationId "top.authorche.agent"
+         minSdkVersion rootProject.ext.minSdkVersion
+         targetSdkVersion rootProject.ext.targetSdkVersion
+-        versionCode 17
+-        versionName "0.17.0"
++        versionCode 18
++        versionName "0.18.0"
+         ndk {
+             abiFilters "arm64-v8a"
+         }
+diff --git a/src/api/__tests__/completionEngines.test.ts b/src/api/__tests__/completionEngines.test.ts
+index 47b8191..1cf5276 100644
+--- a/src/api/__tests__/completionEngines.test.ts
++++ b/src/api/__tests__/completionEngines.test.ts
+@@ -139,7 +139,9 @@ describe('LocalCompletionEngine', () => {
+     (mockContext.getFormattedChat as jest.Mock).mockResolvedValueOnce({
+       type: 'jinja',
+       prompt: 'native formatted prompt',
+-      chat_format: 0,
++      chat_format: 1,
++      chat_parser: 'template parser',
++      generation_prompt: '<|im_start|>assistant\n',
+       grammar: 'lazy-template-grammar',
+       grammar_lazy: true,
+       preserved_tokens: ['<think>'],
+@@ -174,6 +176,9 @@ describe('LocalCompletionEngine', () => {
+         grammar_lazy: false,
+         grammar_triggers: [],
+         preserved_tokens: [],
++        chat_format: 0,
++        chat_parser: '',
++        generation_prompt: '',
+         media_paths: ['/image.png'],
+         stop: ['STOP', '<end_of_turn>'],
+       }),
+@@ -181,6 +186,52 @@ describe('LocalCompletionEngine', () => {
+     );
+   });
+ 
++  it.each(['<|im_start|>assistant\n', '<start_of_turn>model\n', '<think>\n'])(
++    'keeps template prefix %s in the prompt but outside JSON sampling',
++    async prefix => {
++      const prompt = `Formatted user turn\n${prefix}`;
++      (mockContext.getFormattedChat as jest.Mock).mockResolvedValueOnce({
++        type: 'jinja',
++        prompt,
++        chat_format: 1,
++        chat_parser: 'PEG parser requiring template prefix',
++        generation_prompt: prefix,
++        thinking_start_tag: '<think>',
++        thinking_end_tag: '</think>',
++      });
++      (mockContext.completion as jest.Mock).mockImplementationOnce(
++        async native => {
++          // OUTPUT_FORMAT grammars in llama.rn 0.13 prefill generation_prompt.
++          // Non-JSON assistant tokens reject the grammar before generation starts.
++          if (native.json_schema && native.generation_prompt) {
++            throw new Error('std::exception');
++          }
++          return {text: '{"answer":"готово"}', content: '{"answer":"готово"}'};
++        },
++      );
++      const result = await engine.completion({
++        messages: [{role: 'user', content: 'Перевір файли'}],
++        response_format: {
++          type: 'json_schema',
++          json_schema: {
++            schema: {type: 'object', properties: {answer: {type: 'string'}}},
++          },
++        },
++      });
++      expect(mockContext.completion).toHaveBeenCalledTimes(1);
++      expect(mockContext.completion).toHaveBeenCalledWith(
++        expect.objectContaining({
++          prompt,
++          generation_prompt: '',
++          chat_format: 0,
++          chat_parser: '',
++        }),
++        undefined,
++      );
++      expect(result.content).toBe('{"answer":"готово"}');
++    },
++  );
++
+   it('delegates stopCompletion to LlamaContext', async () => {
+     await engine.stopCompletion();
+     expect(mockContext.stopCompletion).toHaveBeenCalled();
+diff --git a/src/api/completionEngines.ts b/src/api/completionEngines.ts
+index 18cc554..e282f5a 100644
+--- a/src/api/completionEngines.ts
++++ b/src/api/completionEngines.ts
+@@ -48,9 +48,14 @@ export class LocalCompletionEngine implements CompletionEngine {
+         grammar_lazy: false,
+         grammar_triggers: [],
+         preserved_tokens: [],
+-        chat_format: formatted.chat_format,
+-        chat_parser: formatted.chat_parser,
+-        generation_prompt: formatted.generation_prompt,
++        // This is raw JSON output, not a native chat/tool envelope. The
++        // assistant prefix already belongs to formatted.prompt. Passing it as
++        // generation_prompt prefills the OUTPUT_FORMAT grammar with '<' (or
++        // another non-JSON prefix); llama.cpp's `throw e` then slices the
++        // original grammar error to the unhelpful "std::exception".
++        chat_format: 0, // COMMON_CHAT_FORMAT_CONTENT_ONLY in pinned llama.rn
++        chat_parser: '',
++        generation_prompt: '',
+         thinking_forced_open: false,
+         force_pure_content: true,
+         stop: [...(params.stop ?? []), ...(formatted.additional_stops ?? [])],

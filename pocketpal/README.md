@@ -26,7 +26,17 @@ git apply ../pocketpal/jarvis-live.patch
 # Apply each remaining patch in the same order as the build workflow.
 ```
 
-Current device-test line: `v0.16.0-pocketpal`. The final reliability patch adds the actual Android control bridge and aligns the APK version with CI. The repository must remain private while repository-owned signing material is present. Wikipedia content is a separate ZIM download; it is not embedded in the APK.
+Current device-test line: `v0.18.0-pocketpal`. The final reliability patch adds the actual Android control bridge and aligns the APK version with CI. The repository must remain private while repository-owned signing material is present. Wikipedia content is a separate ZIM download; it is not embedded in the APK.
 
 
 The v0.16 layer removes the Agent drawer screen, adds Work inside Chat, selected ZIM packs, GGUF-tokenizer context budgeting, a structured action protocol for Mamay/Gemma 3, native bounded HTTP, foreground inference with a partial wake lock, and verifiable project checks. See [WORK.md](WORK.md) for exact behavior, tests and limits.
+
+The v0.18 layer clears the structured sampler generation prefix and native chat parser while retaining the complete GGUF-formatted input prompt and eager JSON schema. This fixes the native grammar-prefill failure whose message was sliced to `std::exception`. `verify_structured_sampler.cpp` reproduces the rejection and tests valid Ukrainian JSON/HTML actions against the pinned llama.cpp implementation without loading a GGUF. It does not measure device inference performance.
+
+Native regression (the APK workflow also runs it):
+
+```bash
+python3 pocketpal/verify_structured_sampler.py \
+  --source jarvis-src/node_modules/llama.rn/vendor/llama.cpp \
+  --build-dir /tmp/jarvis-native-sampler
+```
