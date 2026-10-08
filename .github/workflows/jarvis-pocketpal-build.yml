@@ -81,6 +81,8 @@ jobs:
           git apply ../pocketpal/jarvis-reliability-v0.15.patch
           git apply --check ../pocketpal/jarvis-work-v0.16.patch
           git apply ../pocketpal/jarvis-work-v0.16.patch
+          git apply --check ../pocketpal/jarvis-models-pals-v0.17.patch
+          git apply ../pocketpal/jarvis-models-pals-v0.17.patch
           git diff --check
 
       - name: Verify Jarvis Python artifact API
@@ -184,14 +186,14 @@ jobs:
           test -n "$aapt"
           "$apksigner" verify --verbose --print-certs "$apk" | tee "$RUNNER_TEMP/apk-signature.txt"
           grep -Fqi 'certificate SHA-256 digest: 3049195e638c8ac9b2c41be1981b895c09d6e482d4dc03fa6bb41a59f1b16efd' "$RUNNER_TEMP/apk-signature.txt"
-          "$aapt" dump badging "$apk" | grep -q "package: name='top.authorche.agent' versionCode='16' versionName='0.16.0'"
+          "$aapt" dump badging "$apk" | grep -q "package: name='top.authorche.agent' versionCode='17' versionName='0.17.0'"
           sha256sum "$apk"
           du -h "$apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: jarvis-authorai-0.16.0-pocketpal-arm64-apk
+          name: jarvis-authorai-0.17.0-pocketpal-arm64-apk
           retention-days: 30
           if-no-files-found: error
           path: jarvis-src/android/app/build/outputs/apk/prod/release/app-prod-release.apk
@@ -202,15 +204,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          asset="$RUNNER_TEMP/Jarvis-AuthorAI-0.16.0-pocketpal-arm64.apk"
+          asset="$RUNNER_TEMP/Jarvis-AuthorAI-0.17.0-pocketpal-arm64.apk"
           cp jarvis-src/android/app/build/outputs/apk/prod/release/app-prod-release.apk "$asset"
-          if gh release view v0.16.0-pocketpal >/dev/null 2>&1; then
-            gh release upload v0.16.0-pocketpal "$asset" --clobber
-            gh release edit v0.16.0-pocketpal --notes-file pocketpal/RELEASE_NOTES.md
+          if gh release view v0.17.0-pocketpal >/dev/null 2>&1; then
+            gh release upload v0.17.0-pocketpal "$asset" --clobber
+            gh release edit v0.17.0-pocketpal --notes-file pocketpal/RELEASE_NOTES.md
           else
-            gh release create v0.16.0-pocketpal "$asset" \
+            gh release create v0.17.0-pocketpal "$asset" \
               --target "$GITHUB_SHA" \
-              --title "Jarvis | AuthorAi 0.16.0" \
+              --title "Jarvis | AuthorAi 0.17.0" \
               --notes-file pocketpal/RELEASE_NOTES.md --prerelease
           fi
 
