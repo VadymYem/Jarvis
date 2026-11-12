@@ -1,0 +1,755 @@
+diff --git a/android/app/build.gradle b/android/app/build.gradle
+--- a/android/app/build.gradle
++++ b/android/app/build.gradle
+@@ -86,8 +86,8 @@
+         applicationId "top.authorche.agent"
+         minSdkVersion rootProject.ext.minSdkVersion
+         targetSdkVersion rootProject.ext.targetSdkVersion
+-        versionCode 4
+-        versionName "0.4.0"
++        versionCode 5
++        versionName "0.5.0"
+         ndk {
+             abiFilters "arm64-v8a"
+         }
+diff --git a/android/app/src/main/java/top/authorche/agent/AgentDeviceModule.kt b/android/app/src/main/java/top/authorche/agent/AgentDeviceModule.kt
+--- a/android/app/src/main/java/top/authorche/agent/AgentDeviceModule.kt
++++ b/android/app/src/main/java/top/authorche/agent/AgentDeviceModule.kt
+@@ -13,6 +13,8 @@
+ import android.os.BatteryManager
+ import android.os.Build
+ import android.os.Environment
++import android.os.Handler
++import android.os.Looper
+ import android.os.PowerManager
+ import android.os.StatFs
+ import android.provider.AlarmClock
+@@ -24,6 +26,7 @@
+ import com.facebook.react.bridge.ReactContextBaseJavaModule
+ import com.facebook.react.bridge.ReactMethod
+ import java.util.Locale
++import java.util.concurrent.atomic.AtomicBoolean
+ 
+ class AgentDeviceModule(private val context: ReactApplicationContext) :
+   ReactContextBaseJavaModule(context) {
+@@ -86,10 +89,28 @@
+ 
+   private fun findLauncherByLabel(pm: PackageManager, target: String): Intent? {
+     val query = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+-    val match = pm.queryIntentActivities(query, 0).firstOrNull { info ->
+-      info.loadLabel(pm).toString().lowercase(Locale.ROOT) == target.lowercase(Locale.ROOT)
+-    } ?: return null
+-    return pm.getLaunchIntentForPackage(match.activityInfo.packageName)
++    val apps = pm.queryIntentActivities(query, 0)
++    val requested = normalizeAppName(target)
++    val exact = apps.filter { normalizeAppName(it.loadLabel(pm).toString()) == requested ||
++      normalizeAppName(it.activityInfo.packageName.substringAfterLast('.')) == requested }
++    val matches = if (exact.isNotEmpty()) exact else apps.filter {
++      normalizeAppName(it.loadLabel(pm).toString()).contains(requested)
++    }
++    val packages = matches.map { it.activityInfo.packageName }.distinct()
++    if (packages.size != 1) return null
++    return pm.getLaunchIntentForPackage(packages.first())
++  }
++
++  private fun normalizeAppName(value: String): String {
++    val letters = mapOf('а' to "a", 'б' to "b", 'в' to "v", 'г' to "g", 'ґ' to "g",
++      'д' to "d", 'е' to "e", 'є' to "ye", 'ё' to "yo", 'ж' to "zh", 'з' to "z",
++      'и' to "i", 'і' to "i", 'ї' to "yi", 'й' to "y", 'к' to "k", 'л' to "l",
++      'м' to "m", 'н' to "n", 'о' to "o", 'п' to "p", 'р' to "r", 'с' to "s",
++      'т' to "t", 'у' to "u", 'ў' to "u", 'ф' to "f", 'х' to "h", 'ц' to "ts",
++      'ч' to "ch", 'ш' to "sh", 'щ' to "shch", 'ы' to "y", 'э' to "e",
++      'ю' to "yu", 'я' to "ya", 'ь' to "", 'ъ' to "")
++    return value.lowercase(Locale.ROOT).map { letters[it] ?: it.toString() }.joinToString("")
++      .filter { it.isLetterOrDigit() }
+   }
+ 
+   @ReactMethod
+@@ -137,8 +158,44 @@
+         promise.reject("FLASHLIGHT_UNAVAILABLE", "No controllable rear flashlight was found.")
+         return
+       }
+-      manager.setTorchMode(cameraId, enabled)
+-      promise.resolve("Flashlight ${if (enabled) "enabled" else "disabled"}.")
++      // A successful setTorchMode call does not report the observed state.
++      // Wait for Android's torch callback before telling the agent it worked.
++      val handler = Handler(Looper.getMainLooper())
++      val finished = AtomicBoolean(false)
++      lateinit var callback: CameraManager.TorchCallback
++      val timeout = Runnable {
++        if (finished.compareAndSet(false, true)) {
++          manager.unregisterTorchCallback(callback)
++          promise.reject("FLASHLIGHT_UNCONFIRMED", "Android did not confirm the flashlight state. Check it on the device.")
++        }
++      }
++      var requested = false
++      callback = object : CameraManager.TorchCallback() {
++        override fun onTorchModeChanged(id: String, isEnabled: Boolean) {
++          if (id == cameraId && requested && isEnabled == enabled && finished.compareAndSet(false, true)) {
++            handler.removeCallbacks(timeout)
++            manager.unregisterTorchCallback(this)
++            promise.resolve("Flashlight ${if (enabled) "enabled" else "disabled"} (confirmed by Android).")
++          }
++        }
++        override fun onTorchModeUnavailable(id: String) {
++          if (id == cameraId && requested && finished.compareAndSet(false, true)) {
++            handler.removeCallbacks(timeout)
++            manager.unregisterTorchCallback(this)
++            promise.reject("FLASHLIGHT_UNAVAILABLE", "Flashlight became unavailable; another app may be using the camera.")
++          }
++        }
++      }
++      manager.registerTorchCallback(callback, handler)
++      try {
++        manager.setTorchMode(cameraId, enabled)
++        requested = true
++        handler.postDelayed(timeout, 2500)
++      } catch (error: Exception) {
++        finished.set(true)
++        manager.unregisterTorchCallback(callback)
++        throw error
++      }
+     } catch (error: Exception) {
+       promise.reject("FLASHLIGHT_FAILED", error.message, error)
+     }
+diff --git a/android/app/src/main/java/top/authorche/agent/LiveVoiceModule.kt b/android/app/src/main/java/top/authorche/agent/LiveVoiceModule.kt
+--- a/android/app/src/main/java/top/authorche/agent/LiveVoiceModule.kt
++++ b/android/app/src/main/java/top/authorche/agent/LiveVoiceModule.kt
+@@ -11,6 +11,7 @@
+ import android.speech.tts.TextToSpeech
+ import android.speech.tts.UtteranceProgressListener
+ import com.facebook.react.bridge.Promise
++import com.facebook.react.bridge.Arguments
+ import com.facebook.react.bridge.ReactApplicationContext
+ import com.facebook.react.bridge.ReactContextBaseJavaModule
+ import com.facebook.react.bridge.ReactMethod
+@@ -38,56 +39,76 @@
+         return@runOnUiQueueThread
+       }
+       if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+-        promise.reject("MIC_PERMISSION", "Microphone permission required")
++        promise.reject("MIC_PERMISSION", "Надайте доступ до мікрофона в налаштуваннях Jarvis.")
+         return@runOnUiQueueThread
+       }
+-      if (onDeviceOnly && (Build.VERSION.SDK_INT < 31 || !SpeechRecognizer.isOnDeviceRecognitionAvailable(context))) {
+-        promise.reject("NO_LOCAL_RECOGNIZER", "No on-device recognition service is installed")
+-        return@runOnUiQueueThread
+-      }
+-      if (!onDeviceOnly && !SpeechRecognizer.isRecognitionAvailable(context)) {
+-        promise.reject("NO_RECOGNIZER", "No speech recognition service is installed")
+-        return@runOnUiQueueThread
+-      }
+-      try {
+-        recognizer = if (onDeviceOnly) SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+-                     else SpeechRecognizer.createSpeechRecognizer(context)
+-        recognitionPromise = promise
+-        recognizer?.setRecognitionListener(object : RecognitionListener {
+-          override fun onReadyForSpeech(params: Bundle?) = Unit
+-          override fun onBeginningOfSpeech() = Unit
+-          override fun onRmsChanged(rmsdB: Float) = Unit
+-          override fun onBufferReceived(buffer: ByteArray?) = Unit
+-          override fun onEndOfSpeech() = Unit
+-          override fun onPartialResults(partialResults: Bundle?) = Unit
+-          override fun onEvent(eventType: Int, params: Bundle?) = Unit
+-          override fun onError(error: Int) {
+-            val pending = recognitionPromise
+-            recognitionPromise = null
+-            recognizer?.destroy()
+-            recognizer = null
+-            if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) pending?.resolve(null)
+-            else pending?.reject("RECOGNITION_$error", "Speech recognition error $error")
++      val useLocal = onDeviceOnly && Build.VERSION.SDK_INT >= 31 &&
++        SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
++      startRecognition(languageTag, useLocal, if (useLocal) 0 else 1, promise)
++    }
++  }
++
++  /** Android may provide an on-device service but not a Ukrainian model. */
++  private fun startRecognition(languageTag: String, local: Boolean, attempt: Int, promise: Promise) {
++    if (!local && !SpeechRecognizer.isRecognitionAvailable(context)) {
++      promise.reject("NO_RECOGNIZER", "Голосовий ввід Android недоступний. Установіть сервіс розпізнавання української мови.")
++      return
++    }
++    try {
++      val engine = if (local) SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
++                   else SpeechRecognizer.createSpeechRecognizer(context)
++      recognizer = engine
++      recognitionPromise = promise
++      engine.setRecognitionListener(object : RecognitionListener {
++        override fun onReadyForSpeech(params: Bundle?) = Unit
++        override fun onBeginningOfSpeech() = Unit
++        override fun onRmsChanged(rmsdB: Float) = Unit
++        override fun onBufferReceived(buffer: ByteArray?) = Unit
++        override fun onEndOfSpeech() = Unit
++        override fun onPartialResults(partialResults: Bundle?) = Unit
++        override fun onEvent(eventType: Int, params: Bundle?) = Unit
++        override fun onError(error: Int) {
++          if (recognizer !== engine) return
++          val pending = recognitionPromise
++          recognitionPromise = null
++          recognizer = null
++          engine.destroy()
++          if (pending == null) return
++          if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
++            pending.resolve(null)
++          } else if ((error == 12 || error == 13) && attempt < 2) {
++            // First retry the system recognizer, then the base language tag.
++            startRecognition(if (attempt == 1) languageTag.substringBefore('-') else languageTag, false, attempt + 1, pending)
++          } else if (error == 12 || error == 13) {
++            pending.reject("LANGUAGE_UNAVAILABLE", "Розпізнавання $languageTag недоступне в голосовому сервісі Android. Установіть мовний пакет, змініть сервіс голосового вводу або оберіть іншу мову в Jarvis Live.")
++          } else {
++            pending.reject("RECOGNITION_$error", "Помилка голосового розпізнавання Android: $error")
+           }
+-          override fun onResults(results: Bundle?) {
+-            val pending = recognitionPromise
+-            recognitionPromise = null
+-            recognizer?.destroy()
+-            recognizer = null
+-            pending?.resolve(results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull())
+-          }
+-        })
+-        recognizer?.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+-          putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+-          putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag)
+-          putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, onDeviceOnly)
+-        })
+-      } catch (error: Exception) {
+-        recognitionPromise = null
+-        recognizer?.destroy()
+-        recognizer = null
+-        promise.reject("VOICE_START", error.message, error)
+-      }
++        }
++        override fun onResults(results: Bundle?) {
++          if (recognizer !== engine) return
++          val pending = recognitionPromise
++          recognitionPromise = null
++          recognizer = null
++          engine.destroy()
++          val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
++          if (text == null) pending?.resolve(null)
++          else pending?.resolve(Arguments.createMap().apply {
++            putString("text", text)
++            putBoolean("onDevice", local)
++          })
++        }
++      })
++      engine.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
++        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
++        putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag)
++        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, local)
++      })
++    } catch (error: Exception) {
++      recognitionPromise = null
++      recognizer?.destroy()
++      recognizer = null
++      promise.reject("VOICE_START", error.message, error)
+     }
+   }
+ 
+diff --git a/src/agent/parseFlashlightCommand.ts b/src/agent/parseFlashlightCommand.ts
+new file mode 100644
+--- /dev/null
++++ b/src/agent/parseFlashlightCommand.ts
+@@ -0,0 +1,9 @@
++/** Only intercept unambiguous direct commands. Other requests go to the model. */
++export const parseFlashlightCommand = (input: string): boolean | null => {
++  const text = input.trim().toLowerCase();
++  if (!/(ліхтар|фонар|flashlight|torch|лямп)/i.test(text)) return null;
++  if (/\b(?:don't|do not|not)\s+(?:turn|switch|disable|enable)\b|(?:не|ня)\s+(?:вимк|увімк|включ|выключ|уключ|адключ)/iu.test(text)) return null;
++  const off = /\b(?:turn\s+off|switch\s+off|disable)\b|(?:вимкн|відключ|выключ|отключ|выруб|выключи|выключыць|выключы|адключ|патуш)/iu.test(text);
++  const on = /\b(?:turn\s+on|switch\s+on|enable)\b|(?:увімкн|включ|уключ|запал)/iu.test(text);
++  return off === on ? null : on;
++};
+diff --git a/src/agent/parseOpenAppCommand.ts b/src/agent/parseOpenAppCommand.ts
+new file mode 100644
+--- /dev/null
++++ b/src/agent/parseOpenAppCommand.ts
+@@ -0,0 +1,7 @@
++/** A short direct app launch request; descriptions and ambiguous requests go to Jarvis. */
++export const parseOpenAppCommand = (input: string): string | null => {
++  const match = input.trim().match(/^(?:відкрий|відкрити|запусти|запустити|открой|открыть|запустить|адкрый|запусці|open|launch)\s+(?:(?:застосунок|додаток|програму|приложение|app)\s+)?([\p{L}\p{N}_. -]{2,80})[.!?]?$/iu);
++  if (!match) return null;
++  const target = match[1].trim().replace(/[.!?]+$/, '').trim();
++  return target && !/^(?:це|его|it|щось|something)$/iu.test(target) ? target : null;
++};
+diff --git a/src/agent/__tests__/parseDeviceCommands.test.ts b/src/agent/__tests__/parseDeviceCommands.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/agent/__tests__/parseDeviceCommands.test.ts
+@@ -0,0 +1,19 @@
++import {parseFlashlightCommand} from '../parseFlashlightCommand';
++import {parseOpenAppCommand} from '../parseOpenAppCommand';
++
++describe('direct Android commands', () => {
++  it('routes explicit flashlight changes, including speech-style wording', () => {
++    expect(parseFlashlightCommand('Вимкни ліхтарик')).toBe(false);
++    expect(parseFlashlightCommand('Увімкни ліхтарик')).toBe(true);
++    expect(parseFlashlightCommand('Turn off the flashlight')).toBe(false);
++    expect(parseFlashlightCommand('Не вимикай ліхтарик')).toBeNull();
++    expect(parseFlashlightCommand('Яка погода?')).toBeNull();
++  });
++
++  it('extracts a launch target without guessing for unrelated requests', () => {
++    expect(parseOpenAppCommand('Відкрий Telegram')).toBe('Telegram');
++    expect(parseOpenAppCommand('Запусти додаток com.termux')).toBe('com.termux');
++    expect(parseOpenAppCommand('Open YouTube')).toBe('YouTube');
++    expect(parseOpenAppCommand('Який додаток відкрити?')).toBeNull();
++  });
++});
+diff --git a/src/agent/talents/DeviceActionEngine.ts b/src/agent/talents/DeviceActionEngine.ts
+--- a/src/agent/talents/DeviceActionEngine.ts
++++ b/src/agent/talents/DeviceActionEngine.ts
+@@ -4,6 +4,7 @@
+   ToolDefinition,
+ } from '../../services/talents/types';
+ import {agentDevice, type AgentDeviceApi} from '../native/AgentDevice';
++import {PermissionsAndroid, Platform} from 'react-native';
+ 
+ type DeviceAction =
+   | 'open_app'
+@@ -49,6 +50,13 @@
+         case 'flashlight':
+           if (typeof args.enabled !== 'boolean') {
+             throw new Error('enabled must be a boolean.');
++          }
++          if (Platform.OS === 'android' &&
++              !(await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.CAMERA))) {
++            const grant = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.CAMERA);
++            if (grant !== PermissionsAndroid.RESULTS.GRANTED) {
++              throw new Error('Доступ до камери не надано. Дозвольте його в налаштуваннях агента, щоб керувати ліхтариком.');
++            }
+           }
+           summary = await this.device.setFlashlight(args.enabled);
+           break;
+diff --git a/src/hooks/useChatSession.ts b/src/hooks/useChatSession.ts
+--- a/src/hooks/useChatSession.ts
++++ b/src/hooks/useChatSession.ts
+@@ -38,6 +38,9 @@
+   talentRegistry,
+ } from '../services/talents';
+ import type {ToolDefinition} from '../services/talents/types';
++import {DeviceActionEngine} from '../agent/talents/DeviceActionEngine';
++import {parseFlashlightCommand} from '../agent/parseFlashlightCommand';
++import {parseOpenAppCommand} from '../agent/parseOpenAppCommand';
+ import {
+   agentStateReducer,
+   createTriggerMarkerCache,
+@@ -485,6 +488,7 @@
+   } | null>,
+   user: User,
+   assistant: User,
++  agentMode = false,
+ ) => {
+   const l10n = React.useContext(L10nContext);
+   const conversationIdRef = useRef<string>(randId());
+@@ -515,6 +519,24 @@
+   };
+ 
+   const handleSendPress = async (message: MessageType.PartialText) => {
++    const flashlight = agentMode && !message.imageUris?.length
++      ? parseFlashlightCommand(message.text)
++      : null;
++    const appTarget = agentMode && !message.imageUris?.length
++      ? parseOpenAppCommand(message.text)
++      : null;
++    if (flashlight !== null || appTarget !== null) {
++      await addMessage({author: user, createdAt: Date.now(), id: '',
++        type: 'text', text: message.text, metadata: {copyable: true}});
++      const result = await new DeviceActionEngine().execute(flashlight !== null
++        ? {action: 'flashlight', enabled: flashlight}
++        : {action: 'open_app', target: appTarget});
++      await addMessage({author: assistant, createdAt: Date.now(), id: '',
++        type: 'assistant_turn', steps: [{content: result.type === 'error'
++          ? `Дію не виконано: ${result.errorMessage ?? result.summary}`
++          : result.summary}], metadata: {copyable: true}});
++      return;
++    }
+     const engine = modelStore.engine;
+     if (!engine) {
+       await addSystemMessage(l10n.chat.modelNotLoaded);
+diff --git a/src/screens/AgentScreen/AgentDashboard.tsx b/src/screens/AgentScreen/AgentDashboard.tsx
+--- a/src/screens/AgentScreen/AgentDashboard.tsx
++++ b/src/screens/AgentScreen/AgentDashboard.tsx
+@@ -1,44 +1,65 @@
+ import React from 'react';
+-import {Alert, Linking, StyleSheet, View} from 'react-native';
++import {Alert, Keyboard, Linking, Modal, ScrollView, StyleSheet, View} from 'react-native';
+ import {observer} from 'mobx-react';
+-import {Button, Card, Chip, Text, TextInput, useTheme} from 'react-native-paper';
++import {Button, Chip, Divider, Text, TextInput, useTheme} from 'react-native-paper';
++import {SafeAreaView} from 'react-native-safe-area-context';
+ import {createSearchProvider, type SearchHit} from '../../services/search';
+ import {searchProviderStore} from '../../store/SearchProviderStore';
+ import {androidDocuments} from '../../agent/native/AndroidDocuments';
+ import {shizuku} from '../../agent/native/Shizuku';
+ 
+ const styles = StyleSheet.create({
+-  root: {paddingHorizontal: 16, paddingTop: 12, paddingBottom: 6, gap: 10},
+-  card: {borderRadius: 20},
+-  content: {gap: 10},
++  bar: {paddingHorizontal: 16, paddingVertical: 6, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8},
++  modal: {flex: 1},
++  title: {paddingHorizontal: 20, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between'},
++  tabs: {flexDirection: 'row', gap: 8, paddingHorizontal: 20, paddingBottom: 12},
++  body: {paddingHorizontal: 20, paddingTop: 18, paddingBottom: 48, gap: 16},
+   row: {flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center'},
+-  result: {paddingVertical: 8, gap: 3},
++  hit: {paddingVertical: 12, gap: 5},
+ });
+ 
+-/** Visible, testable actions independent of the language model tool loop. */
++/** Controls in their own scrolling window; the chat input stays visible behind it. */
+ export const AgentDashboard = observer(({children}: {children: React.ReactNode}) => {
+   const theme = useTheme();
+-  const [expanded, setExpanded] = React.useState(false);
++  const [visible, setVisible] = React.useState(false);
++  const [tab, setTab] = React.useState<'search' | 'device'>('search');
+   const [query, setQuery] = React.useState('');
+   const [hits, setHits] = React.useState<SearchHit[]>([]);
++  const [source, setSource] = React.useState('');
+   const [busy, setBusy] = React.useState(false);
+   const [status, setStatus] = React.useState('');
+-  const [shizukuStatus, setShizukuStatus] = React.useState('');
++  const [deviceStatus, setDeviceStatus] = React.useState('');
+   const [packageName, setPackageName] = React.useState('');
+   const provider = searchProviderStore.activeProviderId;
+ 
+   const search = async () => {
+-    if (!query.trim() || !searchProviderStore.canSearch) return;
++    const term = query.trim();
++    if (!term) { setStatus('Введіть пошуковий запит.'); return; }
++    if (!searchProviderStore.canSearch) {
++      setStatus('Спочатку дозвольте мережевий пошук.');
++      return;
++    }
++    Keyboard.dismiss();
+     setBusy(true);
+-    setStatus('');
++    setStatus('Шукаю…');
+     setHits([]);
++    setSource('');
+     try {
+       const adapter = createSearchProvider(provider, () => searchProviderStore.getKey(provider));
+-      const results = await adapter.search(query.trim(), {maxResults: searchProviderStore.resultCount});
++      let results: SearchHit[];
++      try {
++        results = await adapter.search(term, {maxResults: searchProviderStore.resultCount});
++        setSource(provider === 'wikipedia' ? 'Вікіпедія' : 'Веб');
++      } catch (webError) {
++        if (provider !== 'device_web') throw webError;
++        results = await createSearchProvider('wikipedia', () => '').search(term, {maxResults: searchProviderStore.resultCount});
++        setSource('Вікіпедія · резервний пошук');
++        if (!results.length) throw new Error('Веб-пошук недоступний: ' + String(webError) + '. Вікіпедія теж не знайшла результатів.');
++      }
+       setHits(results);
+-      if (!results.length) setStatus('Результатів не знайдено. Спробуйте інший запит.');
++      setStatus(results.length ? 'Знайдено результатів: ' + results.length : 'Результатів немає. Спробуйте інший запит.');
+     } catch (error) {
+-      setStatus(error instanceof Error ? error.message : String(error));
++      setStatus('Помилка пошуку: ' + (error instanceof Error ? error.message : String(error)));
+     } finally {
+       setBusy(false);
+     }
+@@ -47,82 +68,74 @@
+   const openDocument = async () => {
+     try {
+       const file = await androidDocuments.openText();
+-      if (file) setStatus(`Відкрито: ${file.name}\n${file.text.slice(0, 3000)}`);
+-    } catch (error) {
+-      Alert.alert('Файли Android', String(error));
+-    }
+-  };
+-
+-  const connectShizuku = async () => {
+-    try {
+-      setShizukuStatus(await shizuku.requestAccess());
+-    } catch (error) {
+-      setShizukuStatus(String(error));
+-    }
++      if (file) setDeviceStatus('Відкрито: ' + file.name + '\n' + file.text.slice(0, 3000));
++    } catch (error) { Alert.alert('Файли Android', String(error)); }
+   };
+ 
+   const systemAction = (operation: 'disable' | 'enable' | 'animation_set', argument: string) => {
+     const detail = operation === 'disable'
+-      ? `Вимкнути ${argument} для користувача 0? Це може вплинути на роботу системи. Дію можна скасувати кнопкою «Увімкнути».`
+-      : operation === 'enable' ? `Увімкнути ${argument}?` : `Встановити масштаб анімації вікон ${argument}?`;
++      ? 'Вимкнути ' + argument + ' для користувача 0? Це може вплинути на роботу системи. Дію можна скасувати кнопкою «Увімкнути».'
++      : operation === 'enable' ? 'Увімкнути ' + argument + '?' : 'Встановити масштаб анімації вікон ' + argument + '?';
+     Alert.alert('Дія через Shizuku', detail, [
+       {text: 'Скасувати', style: 'cancel'},
+-      {text: 'Виконати', onPress: () => shizuku.execute(operation, argument)
+-        .then(setShizukuStatus).catch(error => setShizukuStatus(String(error)))},
++      {text: 'Виконати', onPress: () => shizuku.execute(operation, argument).then(setDeviceStatus).catch(error => setDeviceStatus(String(error)))},
+     ]);
+   };
+ 
+-  return (
+-    <View style={styles.root}>
+-      <Card style={styles.card} mode="contained">
+-        <Card.Content style={styles.content}>
+-          <Text variant="titleMedium" style={{fontWeight: '700'}}>✦  Jarvis · Agent</Text>
+-          <Text variant="bodySmall">Модель і інструменти Android в окремій розмові</Text>
+-          <View style={styles.row}>
+-            <Button mode="contained-tonal" compact onPress={() => setExpanded(!expanded)} testID="agent-tools-toggle">
+-              {expanded ? 'Сховати інструменти' : 'Інструменти'}
+-            </Button>
+-            {children}
+-          </View>
+-        </Card.Content>
+-      </Card>
+-      {expanded && <Card style={styles.card} mode="outlined"><Card.Content style={styles.content}>
+-        <Text variant="titleSmall">Пошук</Text>
+-        <View style={styles.row}>
+-          <Chip selected={provider === 'device_web'} onPress={() => searchProviderStore.setActiveProvider('device_web')}>Веб</Chip>
+-          <Chip selected={provider === 'wikipedia'} onPress={() => searchProviderStore.setActiveProvider('wikipedia')}>Вікіпедія</Chip>
++  return <>
++    <View style={styles.bar}>
++      <Button mode="contained-tonal" compact onPress={() => setVisible(true)} testID="agent-tools-toggle">Інструменти</Button>
++      {children}
++    </View>
++    <Modal visible={visible} animationType="slide" onRequestClose={() => setVisible(false)} presentationStyle="fullScreen">
++      <SafeAreaView style={[styles.modal, {backgroundColor: theme.colors.background}]} edges={['top', 'bottom']}>
++        <View style={styles.title}>
++          <Text variant="titleLarge">Інструменти Jarvis</Text>
++          <Button onPress={() => setVisible(false)} testID="agent-tools-close">Закрити</Button>
+         </View>
+-        {!searchProviderStore.hasConsentedToSearch && <Button mode="outlined" onPress={() => searchProviderStore.setConsent(true)}>
+-          Дозволити надсилати запити до пошукового сервісу
+-        </Button>}
+-        {searchProviderStore.hasConsentedToSearch && <>
+-          <TextInput mode="outlined" dense label="Пошуковий запит" value={query} onChangeText={setQuery} onSubmitEditing={search} testID="agent-search-input" />
+-          <Button mode="contained" disabled={!query.trim() || busy} loading={busy} onPress={search} testID="agent-search-button">Шукати</Button>
+-        </>}
+-        {hits.map(hit => <View key={hit.url} style={styles.result}>
+-          <Text variant="titleSmall" onPress={() => Linking.openURL(hit.url)} style={{color: theme.colors.primary}}>{hit.title}</Text>
+-          <Text variant="bodySmall">{hit.snippet}</Text>
+-        </View>)}
+-        <Text variant="titleSmall">Пристрій</Text>
+-        <View style={styles.row}>
+-          <Button compact mode="outlined" onPress={openDocument}>Відкрити файл</Button>
+-          <Button compact mode="outlined" onPress={connectShizuku}>Shizuku</Button>
++        <View style={styles.tabs}>
++          <Chip selected={tab === 'search'} onPress={() => setTab('search')}>Пошук</Chip>
++          <Chip selected={tab === 'device'} onPress={() => setTab('device')}>Пристрій</Chip>
+         </View>
+-        <Text variant="bodySmall">Файл відкривається через системний вибір. Доступ маємо лише до вибраних документів.</Text>
+-        <TextInput mode="outlined" dense label="Пакет застосунку (наприклад, com.example.app)" value={packageName} onChangeText={setPackageName} autoCapitalize="none" />
+-        <View style={styles.row}>
+-          <Button compact mode="outlined" disabled={!/^[a-zA-Z][\w]*(\.[a-zA-Z0-9_]+)+$/.test(packageName)} onPress={() => systemAction('disable', packageName)}>Вимкнути</Button>
+-          <Button compact mode="outlined" disabled={!/^[a-zA-Z][\w]*(\.[a-zA-Z0-9_]+)+$/.test(packageName)} onPress={() => systemAction('enable', packageName)}>Увімкнути</Button>
+-          <Button compact mode="text" onPress={() => shizuku.execute('list_disabled', '').then(setShizukuStatus).catch(error => setShizukuStatus(String(error)))}>Вимкнені пакети</Button>
+-        </View>
+-        <View style={styles.row}>
+-          <Button compact mode="text" onPress={() => shizuku.execute('animation_get', '').then(setShizukuStatus).catch(error => setShizukuStatus(String(error)))}>Анімація</Button>
+-          <Button compact mode="text" onPress={() => systemAction('animation_set', '0.5')}>Анімація 0.5×</Button>
+-          <Button compact mode="text" onPress={() => systemAction('animation_set', '1')}>Анімація 1×</Button>
+-        </View>
+-        {!!shizukuStatus && <Text variant="bodySmall">{shizukuStatus}</Text>}
+-        {!!status && <Text variant="bodySmall" selectable>{status}</Text>}
+-      </Card.Content></Card>}
+-    </View>
+-  );
++        <Divider />
++        <ScrollView keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" contentContainerStyle={styles.body} testID="agent-tools-scroll">
++          {tab === 'search' ? <>
++            <Text variant="bodyMedium">Оберіть джерело й введіть запит. Результати відкриваються натисканням.</Text>
++            <View style={styles.row}>
++              <Chip selected={provider === 'device_web'} onPress={() => searchProviderStore.setActiveProvider('device_web')}>Веб</Chip>
++              <Chip selected={provider === 'wikipedia'} onPress={() => searchProviderStore.setActiveProvider('wikipedia')}>Вікіпедія</Chip>
++            </View>
++            {!searchProviderStore.hasConsentedToSearch && <Button mode="outlined" onPress={() => searchProviderStore.setConsent(true)}>Дозволити мережевий пошук</Button>}
++            <TextInput mode="outlined" label="Пошуковий запит" value={query} onChangeText={setQuery} onSubmitEditing={search} returnKeyType="search" testID="agent-search-input" />
++            <Button mode="contained" loading={busy} disabled={busy || !query.trim()} onPress={search} testID="agent-search-button">Шукати</Button>
++            {!!status && <Text variant="bodyMedium" selectable testID="agent-search-status">{status}</Text>}
++            {!!source && hits.length > 0 && <Text variant="labelMedium">Джерело: {source}</Text>}
++            {hits.map(hit => <View key={hit.url} style={styles.hit}>
++              <Text variant="titleMedium" onPress={() => Linking.openURL(hit.url)} style={{color: theme.colors.primary}}>{hit.title}</Text>
++              <Text variant="bodyMedium">{hit.snippet}</Text>
++              <Text variant="bodySmall" onPress={() => Linking.openURL(hit.url)} style={{color: theme.colors.primary}}>{hit.url}</Text>
++              <Divider />
++            </View>)}
++          </> : <>
++            <Text variant="bodyMedium">Файли Android та системні дії через Shizuku.</Text>
++            <Button mode="outlined" onPress={openDocument}>Відкрити текстовий файл</Button>
++            <Text variant="bodySmall">Доступ надається лише до файлів, вибраних у системному вікні.</Text>
++            <Button mode="outlined" onPress={() => shizuku.requestAccess().then(setDeviceStatus).catch(error => setDeviceStatus(String(error)))}>Підключити Shizuku</Button>
++            <TextInput mode="outlined" label="Пакет застосунку" value={packageName} onChangeText={setPackageName} autoCapitalize="none" />
++            <View style={styles.row}>
++              <Button mode="outlined" disabled={!/^[a-zA-Z][\w]*(\.[a-zA-Z0-9_]+)+$/.test(packageName)} onPress={() => systemAction('disable', packageName)}>Вимкнути</Button>
++              <Button mode="outlined" disabled={!/^[a-zA-Z][\w]*(\.[a-zA-Z0-9_]+)+$/.test(packageName)} onPress={() => systemAction('enable', packageName)}>Увімкнути</Button>
++            </View>
++            <Button mode="text" onPress={() => shizuku.execute('list_disabled', '').then(setDeviceStatus).catch(error => setDeviceStatus(String(error)))}>Показати вимкнені пакети</Button>
++            <View style={styles.row}>
++              <Button mode="text" onPress={() => shizuku.execute('animation_get', '').then(setDeviceStatus).catch(error => setDeviceStatus(String(error)))}>Поточна анімація</Button>
++              <Button mode="text" onPress={() => systemAction('animation_set', '0.5')}>0.5×</Button>
++              <Button mode="text" onPress={() => systemAction('animation_set', '1')}>1×</Button>
++            </View>
++            {!!deviceStatus && <Text variant="bodyMedium" selectable>{deviceStatus}</Text>}
++          </>}
++        </ScrollView>
++      </SafeAreaView>
++    </Modal>
++  </>;
+ });
+diff --git a/src/screens/ChatScreen/ChatScreen.tsx b/src/screens/ChatScreen/ChatScreen.tsx
+--- a/src/screens/ChatScreen/ChatScreen.tsx
++++ b/src/screens/ChatScreen/ChatScreen.tsx
+@@ -78,6 +78,7 @@
+     currentMessageInfo,
+     user,
+     assistant,
++    agentMode,
+   );
+ 
+   // Handle deep linking for message prefill
+diff --git a/src/services/talents/WebSearchEngine.ts b/src/services/talents/WebSearchEngine.ts
+--- a/src/services/talents/WebSearchEngine.ts
++++ b/src/services/talents/WebSearchEngine.ts
+@@ -9,6 +9,7 @@
+ import {budgetHits, getCachedHits, setCachedHits} from '../search/searchBudget';
+ import {wrapUntrusted} from './untrustedContent';
+ import {allowReadUrls} from './readUrlAllowlist';
++import {WikipediaProvider} from '../search/providers/wikipedia';
+ 
+ const PER_SNIPPET_CHARS = 280;
+ 
+@@ -64,6 +65,7 @@
+     const maxResults = this.access.getResultCount();
+ 
+     let hits: SearchHit[];
++    let usedWikipediaFallback = false;
+     try {
+       const cached = getCachedHits(provider.id, query, maxResults);
+       if (cached) {
+@@ -72,12 +74,18 @@
+         hits = await provider.search(query, {maxResults});
+       }
+     } catch (e) {
+-      const errMsg = e instanceof Error ? e.message : String(e);
+-      return {
+-        type: 'error',
+-        summary: `web_search: ${errMsg}`,
+-        errorMessage: errMsg,
+-      };
++      if (provider.id === 'device_web') {
++        try {
++          hits = await new WikipediaProvider().search(query, {maxResults});
++          usedWikipediaFallback = true;
++        } catch (fallbackError) {
++          const errMsg = `Веб-пошук: ${String(e)}; Вікіпедія: ${String(fallbackError)}`;
++          return {type: 'error', summary: `web_search: ${errMsg}`, errorMessage: errMsg};
++        }
++      } else {
++        const errMsg = e instanceof Error ? e.message : String(e);
++        return {type: 'error', summary: `web_search: ${errMsg}`, errorMessage: errMsg};
++      }
+     }
+ 
+     const budgeted = budgetHits(
+@@ -103,7 +111,7 @@
+ 
+     // Cache the budgeted hits, not the raw payload — same model-visible result
+     // on replay, without retaining oversized provider snippets.
+-    setCachedHits(provider.id, query, maxResults, budgeted);
++    if (!usedWikipediaFallback) setCachedHits(provider.id, query, maxResults, budgeted);
+     allowReadUrls(budgeted.map(h => h.url));
+ 
+     if (__DEV__) {
+@@ -123,7 +131,7 @@
+         url: h.url,
+         snippet: h.snippet,
+       })),
+-      summary: wrapUntrusted(formatMenu(query, budgeted)),
++      summary: wrapUntrusted((usedWikipediaFallback ? 'Device Web недоступний; результати Вікіпедії.\n' : '') + formatMenu(query, budgeted)),
+     };
+   }
+ 
+diff --git a/src/voice/liveVoice.ts b/src/voice/liveVoice.ts
+--- a/src/voice/liveVoice.ts
++++ b/src/voice/liveVoice.ts
+@@ -2,7 +2,7 @@
+ 
+ interface LiveVoiceNative {
+   isOnDeviceAvailable(): Promise<boolean>;
+-  listen(languageTag: string, onDeviceOnly: boolean): Promise<string | null>;
++  listen(languageTag: string, onDeviceOnly: boolean): Promise<{text: string; onDevice: boolean} | null>;
+   stopListening(): Promise<void>;
+   speak(text: string, languageTag: string): Promise<void>;
+   stopSpeaking(): Promise<void>;
+diff --git a/src/voice/LiveVoicePanel.tsx b/src/voice/LiveVoicePanel.tsx
+--- a/src/voice/LiveVoicePanel.tsx
++++ b/src/voice/LiveVoicePanel.tsx
+@@ -26,6 +26,7 @@
+     const [phase, setPhase] = React.useState<Phase>('idle');
+     const [heard, setHeard] = React.useState('');
+     const [localOnly, setLocalOnly] = React.useState(true);
++    const [language, setLanguage] = React.useState<'uk-UA' | 'en-US'>('uk-UA');
+     const session = React.useRef(0);
+     const baseline = React.useRef<string | undefined>(undefined);
+     const timeout = React.useRef<ReturnType<typeof setTimeout> | undefined>(
+@@ -64,18 +65,19 @@
+         if (!liveVoice || session.current !== id) return;
+         setPhase('listening');
+         try {
+-          const utterance = await liveVoice.listen('uk-UA', offline);
++          const result = await liveVoice.listen(language, offline);
+           if (session.current !== id) return;
+-          if (!utterance?.trim()) {
++          if (!result?.text.trim()) {
+             setPhase('idle');
+             return;
+           }
+-          setHeard(utterance.trim());
++          setLocalOnly(result.onDevice);
++          setHeard(result.text.trim());
+           baseline.current = [...chatSessionStore.currentSessionMessages]
+             .reverse()
+             .find(m => m.type === 'assistant_turn')?.id;
+           setPhase('thinking');
+-          send({type: 'text', text: utterance.trim()});
++          send({type: 'text', text: result.text.trim()});
+           timeout.current = setTimeout(() => {
+             if (session.current === id) {
+               setPhase('idle');
+@@ -94,7 +96,7 @@
+           );
+         }
+       },
+-      [send],
++      [send, language],
+     );
+ 
+     React.useEffect(() => {
+@@ -157,7 +159,7 @@
+           : voices[0];
+       if (!voice) throw new Error('У Supertonic немає доступного голосу.');
+       ttsStore.setCurrentVoice(voice);
+-      ttsStore.setSupertonicLanguage('uk');
++      ttsStore.setSupertonicLanguage(language === 'uk-UA' ? 'uk' : 'en');
+     };
+ 
+     const start = async () => {
+@@ -173,7 +175,10 @@
+         (await PermissionsAndroid.request(
+           PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+         ));
+-      if (granted !== PermissionsAndroid.RESULTS.GRANTED) return;
++      if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
++        Alert.alert('Jarvis Live', 'Дозвольте мікрофон для голосової розмови в налаштуваннях застосунку.');
++        return;
++      }
+       if (!(await activateJarvis())) return;
+       try {
+         await prepareUkrainianVoice();
+@@ -195,6 +200,9 @@
+     return (
+       <View style={styles.panel}>
+         <View style={styles.actions}>
++          {phase === 'idle' && <Button compact onPress={() => setLanguage(language === 'uk-UA' ? 'en-US' : 'uk-UA')}>
++            {language === 'uk-UA' ? 'Українська' : 'English'}
++          </Button>}
+           <Button
+             mode={phase === 'idle' ? 'contained' : 'outlined'}
+             testID="jarvis-live-button"

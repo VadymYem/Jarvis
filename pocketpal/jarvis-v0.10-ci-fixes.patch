@@ -1,0 +1,18 @@
+--- a/src/knowledge/retrieve.ts
++++ b/src/knowledge/retrieve.ts
+@@ -1,4 +1,5 @@
+ import {createSearchProvider} from '../services/search';
++import type {SearchProviderId} from '../services/search/types';
+ import {offlineZim, formatOfflineEvidence} from './offlineZim';
+ import {searchProviderStore} from '../store/SearchProviderStore';
+ 
+@@ -23,7 +24,8 @@
+     // Explicit internet requests must remain useful even when a previously selected
+     // BYOK provider has no/expired key. Always fall back to the keyless on-device
+     // provider before declaring the network unavailable.
+-    const providerIds = selected === 'device_web' ? ['device_web'] : [selected, 'device_web'];
++    const providerIds: SearchProviderId[] =
++      selected === 'device_web' ? ['device_web'] : [selected, 'device_web'];
+     const failures: string[] = [];
+     for (const id of providerIds) {
+       try {

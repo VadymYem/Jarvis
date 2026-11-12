@@ -1,0 +1,2033 @@
+diff --git a/android/app/build.gradle b/android/app/build.gradle
+--- a/android/app/build.gradle
++++ b/android/app/build.gradle
+@@ -87,8 +87,8 @@ android {
+         applicationId "top.authorche.agent"
+         minSdkVersion rootProject.ext.minSdkVersion
+         targetSdkVersion rootProject.ext.targetSdkVersion
+-        versionCode 8
+-        versionName "0.8.0"
++        versionCode 9
++        versionName "0.9.0"
+         ndk {
+             abiFilters "arm64-v8a"
+         }
+@@ -188,5 +188,8 @@ chaquopy {
+     defaultConfig {
+         version = "3.12"
+-        pip { install("pillow==11.0.0") }
++        pip {
++            install("pillow==11.0.0")
++            install("pypdf==5.9.0")
++        }
+     }
+ }
+diff --git a/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt b/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
+--- a/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
++++ b/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
+@@ -10,8 +10,8 @@ class AgentDevicePackage : ReactPackage {
+     listOf(
+       ExternalSpeechModule(reactContext),
+       LiveVoiceModule(reactContext),
+-      OfflineZimModule(reactContext),
+-      AndroidDocumentsModule(reactContext),
++      ManagedOfflineZimModule(reactContext),
++      ManagedDocumentsModule(reactContext),
+       LocalPythonModule(reactContext)
+     )
+ 
+diff --git a/android/app/src/main/java/top/authorche/agent/ManagedDocumentsModule.kt b/android/app/src/main/java/top/authorche/agent/ManagedDocumentsModule.kt
+new file mode 100644
+--- /dev/null
++++ b/android/app/src/main/java/top/authorche/agent/ManagedDocumentsModule.kt
+@@ -0,0 +1,227 @@
++package top.authorche.agent
++
++import android.app.Activity
++import android.content.Intent
++import android.net.Uri
++import android.provider.OpenableColumns
++import com.chaquo.python.Python
++import com.chaquo.python.android.AndroidPlatform
++import com.facebook.react.bridge.ActivityEventListener
++import com.facebook.react.bridge.Arguments
++import com.facebook.react.bridge.BaseActivityEventListener
++import com.facebook.react.bridge.Promise
++import com.facebook.react.bridge.ReactApplicationContext
++import com.facebook.react.bridge.ReactContextBaseJavaModule
++import com.facebook.react.bridge.ReactMethod
++import java.io.File
++import java.util.concurrent.Executors
++
++/**
++ * General Android document bridge.
++ *
++ * SAF content URIs are copied to the private Jarvis workspace before parsing.
++ * This gives Python and native parsers a real seekable path and avoids /dev/fd
++ * compatibility failures. Text, code, HTML, PDF, DOC/DOCX, RTF, ODT, PPTX and
++ * XLSX are parsed locally; unknown text-like formats fall back to decoding.
++ */
++class ManagedDocumentsModule(private val context: ReactApplicationContext) :
++  ReactContextBaseJavaModule(context) {
++
++  private val worker = Executors.newSingleThreadExecutor()
++  private var pending: Promise? = null
++
++  private val listener: ActivityEventListener = object : BaseActivityEventListener() {
++    override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
++      if (requestCode != PICK) return
++      val promise = pending ?: return
++      pending = null
++      if (resultCode != Activity.RESULT_OK || data?.data == null) {
++        promise.resolve(null)
++        return
++      }
++      val uri = data.data!!
++      val granted = data.flags and
++        (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
++      if (granted != 0) {
++        try { context.contentResolver.takePersistableUriPermission(uri, granted) }
++        catch (_: SecurityException) { /* Some providers grant only for this process. */ }
++      }
++      worker.execute {
++        try { promise.resolve(readDocument(uri)) }
++        catch (error: Exception) { promise.reject("DOCUMENT_READ_FAILED", error.message, error) }
++      }
++    }
++  }
++
++  init { context.addActivityEventListener(listener) }
++
++  override fun getName() = "AndroidDocumentsModule"
++
++  @ReactMethod fun openText(promise: Promise) {
++    if (pending != null) {
++      promise.reject("PICKER_BUSY", "File picker already open")
++      return
++    }
++    val activity = context.currentActivity ?: run {
++      promise.reject("NO_ACTIVITY", "Android activity unavailable")
++      return
++    }
++    pending = promise
++    try {
++      activity.startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
++        addCategory(Intent.CATEGORY_OPENABLE)
++        type = "*/*"
++        addFlags(
++          Intent.FLAG_GRANT_READ_URI_PERMISSION or
++            Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
++            Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
++        )
++      }, PICK)
++    } catch (error: Exception) {
++      pending = null
++      promise.reject("PICKER_FAILED", error.message, error)
++    }
++  }
++
++  @ReactMethod fun readText(uriText: String, promise: Promise) {
++    worker.execute {
++      try { promise.resolve(readDocument(authorizedUri(uriText))) }
++      catch (error: Exception) { promise.reject("DOCUMENT_READ_FAILED", error.message, error) }
++    }
++  }
++
++  @ReactMethod fun writeText(uriText: String, content: String, promise: Promise) {
++    worker.execute {
++      try {
++        require(content.length <= 2_000_000) { "Text exceeds 2 MB" }
++        val uri = authorizedUri(uriText, write = true)
++        val name = displayName(uri)
++        require(isTextWritable(name, context.contentResolver.getType(uri))) {
++          "Binary documents are not overwritten as plain text. Create a new PDF/DOCX with python_exec instead."
++        }
++        context.contentResolver.openOutputStream(uri, "wt")?.use {
++          it.write(content.toByteArray(Charsets.UTF_8))
++        } ?: error("Cannot open document for writing")
++        promise.resolve("Saved selected Android document: $name")
++      } catch (error: Exception) {
++        promise.reject("DOCUMENT_WRITE_FAILED", error.message, error)
++      }
++    }
++  }
++
++  @ReactMethod fun listGrants(promise: Promise) {
++    val grants = Arguments.createArray()
++    context.contentResolver.persistedUriPermissions.forEach { grants.pushString(it.uri.toString()) }
++    promise.resolve(grants)
++  }
++
++  @ReactMethod fun revokeGrants(promise: Promise) {
++    try {
++      context.contentResolver.persistedUriPermissions.forEach { permission ->
++        val flags =
++          (if (permission.isReadPermission) Intent.FLAG_GRANT_READ_URI_PERMISSION else 0) or
++            (if (permission.isWritePermission) Intent.FLAG_GRANT_WRITE_URI_PERMISSION else 0)
++        if (flags != 0) {
++          try { context.contentResolver.releasePersistableUriPermission(permission.uri, flags) }
++          catch (_: SecurityException) {}
++        }
++      }
++      promise.resolve("Доступ до вибраних файлів відкликано")
++    } catch (error: Exception) {
++      promise.reject("DOCUMENT_REVOKE_FAILED", error.message, error)
++    }
++  }
++
++  private fun readDocument(uri: Uri): com.facebook.react.bridge.WritableMap {
++    val name = displayName(uri)
++    val mime = context.contentResolver.getType(uri) ?: "application/octet-stream"
++    val local = materialize(uri, name)
++    val text = try {
++      ensurePython()
++      Python.getInstance().getModule("jarvis_documents")
++        .callAttr("extract", local.canonicalPath, name, mime)
++        .toString()
++    } finally {
++      if (local.parentFile?.name == "imports") local.delete()
++    }
++    return Arguments.createMap().apply {
++      putString("uri", uri.toString())
++      putString("name", name)
++      putString("mime", mime)
++      putDouble("size", querySize(uri).coerceAtLeast(0L).toDouble())
++      putString("text", text)
++    }
++  }
++
++  private fun materialize(uri: Uri, originalName: String): File {
++    val root = File(context.filesDir, "jarvis-workspace/imports")
++    check(root.isDirectory || root.mkdirs()) { "Cannot create import workspace" }
++    val safe = originalName.map { ch ->
++      if (ch.isLetterOrDigit() || ch in "._- ()[]") ch else '_'
++    }.joinToString("").take(120).ifBlank { "document.bin" }
++    val target = File(root, System.currentTimeMillis().toString() + "-" + safe)
++    var total = 0L
++    context.contentResolver.openInputStream(uri)?.use { input ->
++      target.outputStream().buffered(1024 * 1024).use { output ->
++        val buffer = ByteArray(1024 * 1024)
++        while (true) {
++          val read = input.read(buffer)
++          if (read < 0) break
++          total += read
++          require(total <= MAX_INPUT_BYTES) { "Document exceeds 128 MB parser limit" }
++          output.write(buffer, 0, read)
++        }
++      }
++    } ?: error("Cannot open selected document")
++    return target
++  }
++
++  private fun authorizedUri(uriText: String, write: Boolean = false): Uri {
++    val uri = Uri.parse(uriText)
++    if (uri.scheme != "content") error("Select this document in Android's file picker first")
++    val persisted = context.contentResolver.persistedUriPermissions.any {
++      it.uri == uri && if (write) it.isWritePermission else it.isReadPermission
++    }
++    if (!persisted && write) error("The selected provider did not grant persistent write access")
++    return uri
++  }
++
++  private fun displayName(uri: Uri): String =
++    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
++      if (it.moveToFirst()) it.getString(0) else null
++    } ?: (uri.lastPathSegment ?: "document")
++
++  private fun querySize(uri: Uri): Long =
++    context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use {
++      if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else -1L
++    } ?: -1L
++
++  private fun isTextWritable(name: String, mime: String?): Boolean {
++    if (mime?.startsWith("text/") == true) return true
++    val ext = name.substringAfterLast('.', "").lowercase()
++    return ext in setOf(
++      "txt", "md", "py", "html", "htm", "css", "js", "jsx", "ts", "tsx",
++      "json", "xml", "csv", "yaml", "yml", "toml", "ini", "log", "kt", "java",
++      "c", "cc", "cpp", "h", "hpp", "sh", "sql", "svg"
++    )
++  }
++
++  private fun ensurePython() {
++    if (!Python.isStarted()) synchronized(Python::class.java) {
++      if (!Python.isStarted()) Python.start(AndroidPlatform(context))
++    }
++  }
++
++  override fun invalidate() {
++    context.removeActivityEventListener(listener)
++    pending?.reject("DOCUMENT_CLOSED", "Document picker closed")
++    pending = null
++    worker.shutdown()
++    super.invalidate()
++  }
++
++  companion object {
++    private const val PICK = 9123
++    private const val MAX_INPUT_BYTES = 128L * 1024L * 1024L
++  }
++}
+diff --git a/android/app/src/main/java/top/authorche/agent/ManagedOfflineZimModule.kt b/android/app/src/main/java/top/authorche/agent/ManagedOfflineZimModule.kt
+new file mode 100644
+--- /dev/null
++++ b/android/app/src/main/java/top/authorche/agent/ManagedOfflineZimModule.kt
+@@ -0,0 +1,328 @@
++package top.authorche.agent
++
++import android.app.Activity
++import android.content.Intent
++import android.net.Uri
++import android.os.StatFs
++import android.provider.OpenableColumns
++import android.text.Html
++import com.facebook.react.bridge.ActivityEventListener
++import com.facebook.react.bridge.Arguments
++import com.facebook.react.bridge.BaseActivityEventListener
++import com.facebook.react.bridge.Promise
++import com.facebook.react.bridge.ReactApplicationContext
++import com.facebook.react.bridge.ReactContextBaseJavaModule
++import com.facebook.react.bridge.ReactMethod
++import org.json.JSONArray
++import org.json.JSONObject
++import org.kiwix.libkiwix.JNIKiwix
++import org.kiwix.libzim.Archive
++import org.kiwix.libzim.Query
++import org.kiwix.libzim.Searcher
++import java.io.File
++import java.util.concurrent.Executors
++
++/**
++ * Multi-archive ZIM library.
++ *
++ * Android SAF descriptors are deliberately not passed to libzim. Selected
++ * archives are copied once into app-owned storage and libzim opens the real
++ * filesystem path, matching java-libkiwix's supported Archive(path) contract.
++ */
++class ManagedOfflineZimModule(private val context: ReactApplicationContext) :
++  ReactContextBaseJavaModule(context) {
++
++  data class Entry(
++    val name: String,
++    val path: String,
++    val sourceUri: String,
++    val articles: Int,
++    val bytes: Long
++  )
++
++  private val preferences = context.getSharedPreferences("jarvis_offline_zim_v2", 0)
++  private val executor = Executors.newSingleThreadExecutor()
++  private var pending: Promise? = null
++  @Volatile private var libraryReady = false
++
++  private val listener: ActivityEventListener = object : BaseActivityEventListener() {
++    override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
++      if (requestCode != PICK_ZIM) return
++      val promise = pending ?: return
++      pending = null
++      if (resultCode != Activity.RESULT_OK || data?.data == null) {
++        promise.resolve(null)
++        return
++      }
++      val uri = data.data!!
++      executor.execute {
++        try {
++          val name = displayName(uri)
++          require(name.endsWith(".zim", ignoreCase = true)) { "Виберіть файл .zim." }
++          val granted = data.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION
++          if (granted != 0) {
++            try { context.contentResolver.takePersistableUriPermission(uri, granted) }
++            catch (_: SecurityException) {}
++          }
++          val existing = loadEntries().firstOrNull { it.sourceUri == uri.toString() && File(it.path).isFile }
++          if (existing != null) {
++            promise.resolve(info(existing))
++            return@execute
++          }
++          val imported = importArchive(uri, name)
++          val all = loadEntries().filter { File(it.path).isFile }.toMutableList()
++          all.add(imported)
++          saveEntries(all)
++          promise.resolve(info(imported))
++        } catch (error: Exception) {
++          promise.reject("ZIM_IMPORT", error.message, error)
++        }
++      }
++    }
++  }
++
++  init { context.addActivityEventListener(listener) }
++
++  override fun getName() = "OfflineZimModule"
++
++  @ReactMethod fun chooseArchive(promise: Promise) {
++    if (pending != null) {
++      promise.reject("ZIM_PICKER_BUSY", "Вибір архіву вже відкрито")
++      return
++    }
++    val activity = context.currentActivity ?: run {
++      promise.reject("ZIM_NO_ACTIVITY", "Відкрийте Jarvis перед вибором архіву")
++      return
++    }
++    pending = promise
++    try {
++      activity.startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
++        addCategory(Intent.CATEGORY_OPENABLE)
++        type = "*/*"
++        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
++      }, PICK_ZIM)
++    } catch (error: Exception) {
++      pending = null
++      promise.reject("ZIM_PICKER", error.message, error)
++    }
++  }
++
++  @ReactMethod fun status(promise: Promise) {
++    executor.execute {
++      try {
++        val entries = loadEntries().filter { File(it.path).isFile }
++        if (entries.size != loadEntries().size) saveEntries(entries)
++        val archives = Arguments.createArray()
++        entries.forEach { e ->
++          archives.pushMap(Arguments.createMap().apply {
++            putString("name", e.name)
++            putDouble("bytes", e.bytes.toDouble())
++            putInt("articles", e.articles)
++          })
++        }
++        promise.resolve(Arguments.createMap().apply {
++          putBoolean("ready", entries.isNotEmpty())
++          putString("name", when (entries.size) {
++            0 -> null
++            1 -> entries.first().name
++            else -> entries.size.toString() + " ZIM архівів"
++          })
++          putInt("articles", entries.sumOf { it.articles })
++          putArray("archives", archives)
++        })
++      } catch (error: Exception) {
++        promise.reject("ZIM_STATUS", error.message, error)
++      }
++    }
++  }
++
++  @ReactMethod fun forgetArchive(promise: Promise) {
++    executor.execute {
++      val entries = loadEntries()
++      entries.forEach { entry ->
++        try { File(entry.path).delete() } catch (_: Exception) {}
++        try {
++          context.contentResolver.releasePersistableUriPermission(
++            Uri.parse(entry.sourceUri), Intent.FLAG_GRANT_READ_URI_PERMISSION
++          )
++        } catch (_: Exception) {}
++      }
++      preferences.edit().clear().apply()
++      promise.resolve(null)
++    }
++  }
++
++  @ReactMethod fun search(query: String, limit: Double, promise: Promise) {
++    val term = query.trim().take(180)
++    if (term.length < 2) {
++      promise.resolve(Arguments.createArray())
++      return
++    }
++    executor.execute {
++      try {
++        ensureLibrary()
++        val wanted = limit.toInt().coerceIn(1, 8)
++        val rows = Arguments.createArray()
++        var count = 0
++        for (entry in loadEntries().filter { File(it.path).isFile }) {
++          if (count >= wanted) break
++          val archive = Archive(entry.path)
++          try {
++            val searcher = Searcher(archive)
++            try {
++              val request = Query(term)
++              try {
++                val search = searcher.search(request)
++                try {
++                  val iterator = search.getResults(0, wanted - count)
++                  try {
++                    while (iterator.hasNext() && count < wanted) {
++                      val title = iterator.title ?: break
++                      val path = iterator.path ?: ""
++                      val snippet = Html.fromHtml(
++                        iterator.snippet ?: "", Html.FROM_HTML_MODE_COMPACT
++                      ).toString().replace(Regex("\\s+"), " ").trim().take(500)
++                      val excerpt = try {
++                        val item = archive.getEntryByPath(path).getItem(true)
++                        if (item.size in 1L..400_000L && item.mimetype.startsWith("text/html")) {
++                          val blob = item.data
++                          try {
++                            Html.fromHtml(
++                              blob.data.toString(Charsets.UTF_8), Html.FROM_HTML_MODE_COMPACT
++                            ).toString().replace(Regex("\\s+"), " ").trim().take(1800)
++                          } finally { blob.dispose() }
++                        } else snippet
++                      } catch (_: Exception) { snippet }
++                      rows.pushMap(Arguments.createMap().apply {
++                        putString("title", title)
++                        putString("path", path)
++                        putString("excerpt", excerpt.ifBlank { snippet })
++                        putString("archive", entry.name)
++                      })
++                      iterator.next()
++                      count++
++                    }
++                  } finally { iterator.dispose() }
++                } finally { search.dispose() }
++              } finally { request.dispose() }
++            } finally { searcher.dispose() }
++          } finally { archive.dispose() }
++        }
++        promise.resolve(rows)
++      } catch (error: Exception) {
++        promise.reject("ZIM_SEARCH", error.message, error)
++      }
++    }
++  }
++
++  private fun importArchive(uri: Uri, name: String): Entry {
++    ensureLibrary()
++    val root = context.getExternalFilesDir("zim") ?: File(context.filesDir, "zim")
++    check(root.isDirectory || root.mkdirs()) { "Неможливо створити каталог ZIM." }
++
++    val expected = querySize(uri)
++    if (expected > 0) {
++      val free = StatFs(root.absolutePath).availableBytes
++      require(expected + RESERVE_BYTES < free) {
++        "Недостатньо місця. Для імпорту потрібно приблизно " +
++          (expected / 1024 / 1024) + " MB плюс резерв."
++      }
++    }
++
++    val safe = name.map { ch ->
++      if (ch.isLetterOrDigit() || ch in "._- ()[]") ch else '_'
++    }.joinToString("").take(140).ifBlank { "archive.zim" }
++    val target = File(root, System.currentTimeMillis().toString() + "-" + safe)
++    var copied = 0L
++    try {
++      context.contentResolver.openInputStream(uri)?.use { input ->
++        target.outputStream().buffered(1024 * 1024).use { output ->
++          val buffer = ByteArray(1024 * 1024)
++          while (true) {
++            val n = input.read(buffer)
++            if (n < 0) break
++            output.write(buffer, 0, n)
++            copied += n
++          }
++        }
++      } ?: error("Неможливо прочитати вибраний ZIM.")
++      require(copied > 0) { "ZIM файл порожній." }
++      val archive = Archive(target.canonicalPath)
++      val articles = try { archive.articleCount } finally { archive.dispose() }
++      return Entry(name, target.canonicalPath, uri.toString(), articles, copied)
++    } catch (error: Exception) {
++      target.delete()
++      throw error
++    }
++  }
++
++  private fun info(entry: Entry) = Arguments.createMap().apply {
++    putBoolean("ready", true)
++    putString("name", entry.name)
++    putInt("articles", entry.articles)
++    putDouble("bytes", entry.bytes.toDouble())
++  }
++
++  private fun ensureLibrary() {
++    if (!libraryReady) synchronized(this) {
++      if (!libraryReady) {
++        JNIKiwix(context)
++        libraryReady = true
++      }
++    }
++  }
++
++  private fun loadEntries(): List<Entry> {
++    val raw = preferences.getString("archives", "[]") ?: "[]"
++    val arr = JSONArray(raw)
++    return (0 until arr.length()).mapNotNull { index ->
++      try {
++        val item = arr.getJSONObject(index)
++        Entry(
++          item.getString("name"),
++          item.getString("path"),
++          item.optString("sourceUri", ""),
++          item.optInt("articles", 0),
++          item.optLong("bytes", 0L)
++        )
++      } catch (_: Exception) { null }
++    }
++  }
++
++  private fun saveEntries(entries: List<Entry>) {
++    val arr = JSONArray()
++    entries.forEach { entry ->
++      arr.put(JSONObject().apply {
++        put("name", entry.name)
++        put("path", entry.path)
++        put("sourceUri", entry.sourceUri)
++        put("articles", entry.articles)
++        put("bytes", entry.bytes)
++      })
++    }
++    preferences.edit().putString("archives", arr.toString()).apply()
++  }
++
++  private fun displayName(uri: Uri): String =
++    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
++      if (it.moveToFirst()) it.getString(0) else null
++    } ?: (uri.lastPathSegment ?: "archive.zim")
++
++  private fun querySize(uri: Uri): Long =
++    context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use {
++      if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else -1L
++    } ?: -1L
++
++  override fun invalidate() {
++    context.removeActivityEventListener(listener)
++    pending?.reject("ZIM_CLOSED", "Archive picker closed")
++    pending = null
++    executor.shutdown()
++    super.invalidate()
++  }
++
++  companion object {
++    private const val PICK_ZIM = 9254
++    private const val RESERVE_BYTES = 128L * 1024L * 1024L
++  }
++}
+diff --git a/android/app/src/main/python/jarvis_documents.py b/android/app/src/main/python/jarvis_documents.py
+new file mode 100644
+--- /dev/null
++++ b/android/app/src/main/python/jarvis_documents.py
+@@ -0,0 +1,181 @@
++"""Local document text extraction for Jarvis.
++
++No file is uploaded. Parsers are intentionally bounded and return plain text for
++model context, while the original document stays under Android's SAF control.
++"""
++
++from html.parser import HTMLParser
++from pathlib import Path
++import re
++import zipfile
++import xml.etree.ElementTree as ET
++
++MAX_CHARS = 120_000
++
++
++class _HTMLText(HTMLParser):
++    def __init__(self):
++        super().__init__(convert_charrefs=True)
++        self.parts = []
++
++    def handle_data(self, data):
++        value = data.strip()
++        if value:
++            self.parts.append(value)
++
++
++def _clean(text):
++    return re.sub(r"\s+", " ", text or "").strip()[:MAX_CHARS]
++
++
++def _decode(data):
++    for encoding in ("utf-8-sig", "utf-16", "utf-16-le", "cp1251", "latin-1"):
++        try:
++            text = data.decode(encoding)
++            if "\x00" not in text[:2000]:
++                return text
++        except Exception:
++            pass
++    return data.decode("utf-8", errors="replace")
++
++
++def _xml_text(data):
++    root = ET.fromstring(data)
++    return _clean(" ".join(part for part in root.itertext() if part and part.strip()))
++
++
++def _zip_xml(path, members):
++    parts = []
++    with zipfile.ZipFile(path) as archive:
++        names = archive.namelist()
++        selected = []
++        for matcher in members:
++            if matcher.endswith("*"):
++                prefix = matcher[:-1]
++                selected.extend(sorted(name for name in names if name.startswith(prefix) and name.endswith(".xml")))
++            elif matcher in names:
++                selected.append(matcher)
++        for name in selected:
++            try:
++                text = _xml_text(archive.read(name))
++                if text:
++                    parts.append(text)
++            except Exception:
++                continue
++            if sum(map(len, parts)) >= MAX_CHARS:
++                break
++    return _clean("\n\n".join(parts))
++
++
++def _xlsx(path):
++    rows = []
++    with zipfile.ZipFile(path) as archive:
++        names = archive.namelist()
++        shared = []
++        if "xl/sharedStrings.xml" in names:
++            try:
++                root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
++                shared = ["".join(node.itertext()).strip() for node in root]
++            except Exception:
++                shared = []
++        for name in sorted(n for n in names if n.startswith("xl/worksheets/sheet") and n.endswith(".xml")):
++            try:
++                root = ET.fromstring(archive.read(name))
++                values = []
++                for cell in root.iter():
++                    if not cell.tag.endswith("}c"):
++                        continue
++                    cell_type = cell.attrib.get("t")
++                    value = next((child.text for child in cell if child.tag.endswith("}v")), None)
++                    if value is None:
++                        inline = "".join(child_text for child in cell for child_text in child.itertext())
++                        value = inline.strip()
++                    if value and cell_type == "s" and value.isdigit():
++                        idx = int(value)
++                        if 0 <= idx < len(shared):
++                            value = shared[idx]
++                    if value:
++                        values.append(value)
++                if values:
++                    rows.append(" | ".join(values))
++            except Exception:
++                continue
++            if sum(map(len, rows)) >= MAX_CHARS:
++                break
++    return _clean("\n".join(rows))
++
++
++def _legacy_doc(data):
++    # Old binary .doc is not XML. Extract plausible UTF-16LE and 8-bit text
++    # runs without pretending this is a full Word binary parser.
++    candidates = []
++    for match in re.finditer(rb"(?:[\x20-\x7e\x80-\xff]\x00){4,}", data):
++        try:
++            candidates.append(match.group(0).decode("utf-16-le"))
++        except Exception:
++            pass
++    for match in re.finditer(rb"[\x20-\x7e\x80-\xff]{8,}", data):
++        raw = match.group(0)
++        try:
++            candidates.append(raw.decode("cp1251"))
++        except Exception:
++            pass
++    return _clean("\n".join(candidates))
++
++
++def extract(path, name="", mime=""):
++    file = Path(path)
++    if not file.is_file():
++        raise FileNotFoundError(str(file))
++    ext = (Path(name).suffix or file.suffix).lower()
++    mime = (mime or "").lower()
++
++    if ext == ".pdf" or mime == "application/pdf":
++        from pypdf import PdfReader
++        reader = PdfReader(str(file))
++        parts = []
++        for page in reader.pages[:300]:
++            try:
++                parts.append(page.extract_text() or "")
++            except Exception:
++                continue
++            if sum(map(len, parts)) >= MAX_CHARS:
++                break
++        return _clean("\n\n".join(parts))
++
++    if ext == ".docx":
++        return _zip_xml(file, ["word/document.xml", "word/header*", "word/footer*"])
++
++    if ext == ".odt":
++        return _zip_xml(file, ["content.xml"])
++
++    if ext == ".pptx":
++        return _zip_xml(file, ["ppt/slides/slide*"])
++
++    if ext == ".xlsx":
++        return _xlsx(file)
++
++    data = file.read_bytes()
++
++    if ext == ".doc":
++        text = _legacy_doc(data)
++        if text:
++            return text
++
++    if ext in {".html", ".htm"} or "html" in mime:
++        parser = _HTMLText()
++        parser.feed(_decode(data))
++        return _clean("\n".join(parser.parts))
++
++    if ext == ".rtf":
++        text = _decode(data)
++        text = re.sub(r"\\'[0-9a-fA-F]{2}", " ", text)
++        text = re.sub(r"\\[a-zA-Z]+-?\d* ?", " ", text)
++        return _clean(text.replace("{", " ").replace("}", " "))
++
++    text = _decode(data)
++    printable = sum(ch.isprintable() or ch in "\r\n\t" for ch in text[:10000])
++    sample = max(1, min(len(text), 10000))
++    if printable / sample < 0.72:
++        raise ValueError("Unsupported binary format: " + (ext or mime or "unknown"))
++    return _clean(text)
+diff --git a/android/app/src/main/python/jarvis_artifacts.py b/android/app/src/main/python/jarvis_artifacts.py
+new file mode 100644
+--- /dev/null
++++ b/android/app/src/main/python/jarvis_artifacts.py
+@@ -0,0 +1,176 @@
++"""Artifact helpers intended for model-generated Jarvis Python scripts."""
++
++from pathlib import Path
++from html import escape
++import textwrap
++import zipfile
++
++
++def _target(path):
++    root = Path.cwd().resolve()
++    target = (root / path).resolve() if not Path(path).is_absolute() else Path(path).resolve()
++    try:
++        target.relative_to(root)
++    except ValueError as exc:
++        raise ValueError("Artifact path must stay inside the Jarvis workspace") from exc
++    target.parent.mkdir(parents=True, exist_ok=True)
++    return target
++
++
++def _font(size, bold=False):
++    from PIL import ImageFont
++    candidates = [
++        "/system/fonts/NotoSans-Bold.ttf" if bold else "/system/fonts/NotoSans-Regular.ttf",
++        "/system/fonts/Roboto-Bold.ttf" if bold else "/system/fonts/Roboto-Regular.ttf",
++    ]
++    for candidate in candidates:
++        try:
++            return ImageFont.truetype(candidate, size)
++        except Exception:
++            pass
++    return ImageFont.load_default()
++
++
++def _wrap(draw, text, font, width):
++    words = str(text).split()
++    lines, current = [], ""
++    for word in words:
++        proposal = word if not current else current + " " + word
++        if draw.textlength(proposal, font=font) <= width:
++            current = proposal
++        else:
++            if current:
++                lines.append(current)
++            current = word
++    if current:
++        lines.append(current)
++    return lines or [""]
++
++
++def create_card(path, title, body, width=1080, height=1080):
++    from PIL import Image, ImageDraw
++    target = _target(path)
++    image = Image.new("RGB", (int(width), int(height)), "white")
++    draw = ImageDraw.Draw(image)
++    title_font = _font(max(30, int(width) // 19), True)
++    body_font = _font(max(22, int(width) // 31), False)
++    margin = max(48, int(width) // 14)
++    y = margin
++    for line in _wrap(draw, title, title_font, width - 2 * margin):
++        draw.text((margin, y), line, font=title_font, fill="black")
++        y += int(title_font.size * 1.25)
++    y += int(body_font.size * 0.8)
++    for paragraph in str(body).splitlines():
++        for line in _wrap(draw, paragraph, body_font, width - 2 * margin):
++            if y + int(body_font.size * 1.4) > height - margin:
++                break
++            draw.text((margin, y), line, font=body_font, fill="black")
++            y += int(body_font.size * 1.4)
++        y += int(body_font.size * 0.5)
++        if y > height - margin:
++            break
++    image.save(target)
++    return str(target)
++
++
++def create_pdf(path, text, title=""):
++    from PIL import Image, ImageDraw
++    target = _target(path)
++    page_w, page_h = 1240, 1754
++    margin = 90
++    title_font = _font(42, True)
++    body_font = _font(30, False)
++    pages = []
++    paragraphs = ([str(title)] if title else []) + str(text).splitlines()
++    image = Image.new("RGB", (page_w, page_h), "white")
++    draw = ImageDraw.Draw(image)
++    y = margin
++
++    def new_page():
++        nonlocal image, draw, y
++        pages.append(image)
++        image = Image.new("RGB", (page_w, page_h), "white")
++        draw = ImageDraw.Draw(image)
++        y = margin
++
++    for index, paragraph in enumerate(paragraphs):
++        font = title_font if title and index == 0 else body_font
++        spacing = int(font.size * 1.35)
++        for line in _wrap(draw, paragraph, font, page_w - 2 * margin):
++            if y + spacing > page_h - margin:
++                new_page()
++            draw.text((margin, y), line, font=font, fill="black")
++            y += spacing
++        y += int(font.size * 0.55)
++    pages.append(image)
++    pages[0].save(target, "PDF", resolution=150.0, save_all=True, append_images=pages[1:])
++    return str(target)
++
++
++def create_doc(path, text, title=""):
++    """Create a Word-compatible legacy .doc as RTF with Unicode escapes."""
++    target = _target(path)
++    if target.suffix.lower() != ".doc":
++        target = target.with_suffix(".doc")
++    def rtf_escape(value):
++        out = []
++        for ch in str(value):
++            code = ord(ch)
++            if ch in ("\\\\", "{", "}"):
++                out.append("\\\\" + ch)
++            elif 32 <= code < 127:
++                out.append(ch)
++            else:
++                signed = code if code < 32768 else code - 65536
++                out.append("\\u" + str(signed) + "?")
++        return "".join(out)
++    blocks = []
++    if title:
++        blocks.append("\\b\\fs36 " + rtf_escape(title) + "\\b0\\fs24\\par")
++    for paragraph in str(text).splitlines():
++        blocks.append(rtf_escape(paragraph) + "\\par")
++    payload = "{\\rtf1\\ansi\\deff0\\uc1\\fs24 " + "\n".join(blocks) + "}"
++    target.write_text(payload, encoding="ascii")
++    return str(target)
++
++
++def create_docx(path, paragraphs, title=""):
++    target = _target(path)
++    if isinstance(paragraphs, str):
++        paragraphs = paragraphs.splitlines()
++    blocks = []
++    if title:
++        blocks.append(
++            '<w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>' +
++            escape(str(title)) + '</w:t></w:r></w:p>'
++        )
++    for paragraph in paragraphs:
++        value = escape(str(paragraph))
++        blocks.append('<w:p><w:r><w:t xml:space="preserve">' + value + '</w:t></w:r></w:p>')
++
++    content_types = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
++<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
++<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
++<Default Extension="xml" ContentType="application/xml"/>
++<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
++<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
++</Types>"""
++    rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
++<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
++<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
++</Relationships>"""
++    document = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
++<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
++<w:body>""" + "".join(blocks) + """<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134"/></w:sectPr></w:body>
++</w:document>"""
++    styles = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
++<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
++<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:rPr><w:sz w:val="22"/></w:rPr></w:style>
++<w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:rPr><w:b/><w:sz w:val="36"/></w:rPr></w:style>
++</w:styles>"""
++    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
++        archive.writestr("[Content_Types].xml", content_types)
++        archive.writestr("_rels/.rels", rels)
++        archive.writestr("word/document.xml", document)
++        archive.writestr("word/styles.xml", styles)
++    return str(target)
+diff --git a/android/app/src/main/python/jarvis_runner.py b/android/app/src/main/python/jarvis_runner.py
+--- a/android/app/src/main/python/jarvis_runner.py
++++ b/android/app/src/main/python/jarvis_runner.py
+@@ -1,57 +1,102 @@
+-"""Run a short local script and report newly created workspace files."""
+-
+-import contextlib
+-import io
+-import json
+-import os
+-import sys
+-import time
+-import traceback
+-from pathlib import Path
+-
+-
+-class _LimitedOutput(io.StringIO):
+-    def write(self, value):
+-        if self.tell() + len(value) > 16000:
+-            raise ValueError("Python output exceeded 16,000 characters")
+-        return super().write(value)
+-
+-
+-def run(code, workspace):
+-    root = Path(workspace).resolve()
+-    root.mkdir(parents=True, exist_ok=True)
+-    before = {str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()}
+-    stdout, stderr = _LimitedOutput(), _LimitedOutput()
+-    old_cwd, old_argv, old_trace = os.getcwd(), sys.argv, sys.gettrace()
+-    deadline = time.monotonic() + 15
+-
+-    def trace(frame, event, arg):
+-        if time.monotonic() > deadline:
+-            raise TimeoutError("Python exceeded 15 seconds")
+-        return trace
+-
+-    error = None
+-    try:
+-        os.chdir(root)
+-        sys.argv = ["jarvis_script.py"]
+-        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+-            sys.settrace(trace)
+-            try:
+-                exec(compile(code, "<jarvis_script>", "exec"), {"__name__": "__main__"})
+-            finally:
+-                sys.settrace(old_trace)
+-    except BaseException as exc:
+-        error = "".join(traceback.format_exception_only(type(exc), exc)).strip()[:1000]
+-    finally:
+-        sys.settrace(old_trace)
+-        sys.argv = old_argv
+-        os.chdir(old_cwd)
+-
+-    created = []
+-    for path in root.rglob("*"):
+-        if path.is_file() and str(path.relative_to(root)) not in before:
+-            created.append(str(path.relative_to(root)))
+-            if len(created) >= 40:
+-                break
+-    return json.dumps({"stdout": stdout.getvalue(), "stderr": stderr.getvalue(),
+-                       "error": error, "created": created}, ensure_ascii=False)
++"""Run bounded local Python and report changed workspace artifacts."""
++
++import contextlib
++import io
++import json
++import mimetypes
++import os
++import sys
++import time
++import traceback
++from pathlib import Path
++
++
++class _LimitedOutput(io.StringIO):
++    def write(self, value):
++        if self.tell() + len(value) > 16000:
++            raise ValueError("Python output exceeded 16,000 characters")
++        return super().write(value)
++
++
++def _snapshot(root):
++    result = {}
++    for path in root.rglob("*"):
++        if path.is_file():
++            try:
++                stat = path.stat()
++                result[str(path.relative_to(root))] = (stat.st_size, stat.st_mtime_ns)
++            except OSError:
++                pass
++    return result
++
++
++def _mime(path):
++    overrides = {
++        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
++        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
++        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
++        ".md": "text/markdown",
++        ".py": "text/x-python",
++    }
++    return overrides.get(path.suffix.lower()) or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
++
++
++def run(code, workspace):
++    root = Path(workspace).resolve()
++    root.mkdir(parents=True, exist_ok=True)
++    before = _snapshot(root)
++    stdout, stderr = _LimitedOutput(), _LimitedOutput()
++    old_cwd, old_argv, old_trace = os.getcwd(), sys.argv, sys.gettrace()
++    deadline = time.monotonic() + 45
++
++    def trace(frame, event, arg):
++        if time.monotonic() > deadline:
++            raise TimeoutError("Python exceeded 45 seconds")
++        return trace
++
++    error = None
++    try:
++        os.chdir(root)
++        sys.argv = ["jarvis_script.py"]
++        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
++            sys.settrace(trace)
++            try:
++                exec(compile(code, "<jarvis_script>", "exec"), {"__name__": "__main__"})
++            finally:
++                sys.settrace(old_trace)
++    except BaseException as exc:
++        error = "".join(traceback.format_exception_only(type(exc), exc)).strip()[:1200]
++    finally:
++        sys.settrace(old_trace)
++        sys.argv = old_argv
++        os.chdir(old_cwd)
++
++    after = _snapshot(root)
++    changed = [name for name, signature in after.items() if before.get(name) != signature][:40]
++    artifacts = []
++    for name in changed:
++        path = (root / name).resolve()
++        try:
++            size = path.stat().st_size
++            mime = _mime(path)
++            artifacts.append({
++                "name": path.name,
++                "path": name,
++                "uri": path.as_uri(),
++                "mime": mime,
++                "size": size,
++                "image": mime.startswith("image/"),
++            })
++        except OSError:
++            pass
++
++    return json.dumps(
++        {
++            "stdout": stdout.getvalue(),
++            "stderr": stderr.getvalue(),
++            "error": error,
++            "created": changed,
++            "artifacts": artifacts,
++        },
++        ensure_ascii=False,
++    )
+diff --git a/src/agent/talents/PythonExecEngine.ts b/src/agent/talents/PythonExecEngine.ts
+--- a/src/agent/talents/PythonExecEngine.ts
++++ b/src/agent/talents/PythonExecEngine.ts
+@@ -1,87 +1,135 @@
+-import {Alert, NativeModules, Platform} from 'react-native';
+-import type {
+-  TalentEngine,
+-  TalentResult,
+-  ToolDefinition,
+-  SystemPromptContext,
+-} from '../../services/talents/types';
+-
+-type PythonResult = {stdout: string; stderr: string; error: string | null; created: string[]};
+-interface LocalPythonNative {
+-  runPython(code: string): Promise<{result: string; workspace: string}>;
+-}
+-
+-const native = NativeModules.LocalPythonModule as LocalPythonNative | undefined;
+-const confirm = (length: number): Promise<boolean> => new Promise(resolve => {
+-  Alert.alert('Запустити Python?', `Jarvis запустить ${length} символів коду у локальному середовищі. Код може змінювати приватні файли додатка.`, [
+-    {text: 'Скасувати', style: 'cancel', onPress: () => resolve(false)},
+-    {text: 'Запустити', onPress: () => resolve(true)},
+-  ], {cancelable: false});
+-});
+-
+-export class PythonExecEngine implements TalentEngine {
+-  readonly name = 'python_exec';
+-  readonly recommendedContextTokens = 1600;
+-
+-  async execute(args: Record<string, any>): Promise<TalentResult> {
+-    if (Platform.OS !== 'android' || !native) {
+-      return {
+-        type: 'error',
+-        summary: 'python_exec: embedded Python is unavailable.',
+-        errorMessage: 'Python execution is available only on Android.',
+-      };
+-    }
+-    const code = typeof args.code === 'string' ? args.code : '';
+-    if (!code.trim() || code.length > 20000) {
+-      return {
+-        type: 'error',
+-        summary: 'python_exec: missing code.',
+-        errorMessage: 'The code argument must contain 1–20,000 characters.',
+-      };
+-    }
+-    try {
+-      if (!(await confirm(code.length))) return {type: 'text', summary: 'User declined Python execution.'};
+-      const run = await native.runPython(code);
+-      const result = JSON.parse(run.result) as PythonResult;
+-      const output = [
+-        result.stdout?.trim() ? 'stdout:\n' + result.stdout.trim() : '',
+-        result.stderr?.trim() ? 'stderr:\n' + result.stderr.trim() : '',
+-        result.error?.trim() ? 'error:\n' + result.error.trim() : '',
+-        result.created?.length ? 'Created in workspace:\n' + result.created.map(path => `file://${run.workspace}/${path}`).join('\n') : '',
+-      ]
+-        .filter(Boolean)
+-        .join('\n\n')
+-        .slice(0, 64000);
+-      if (result.error) {
+-        return {type: 'error', summary: output, errorMessage: output};
+-      }
+-      return {type: 'text', summary: output || 'Python completed without output.'};
+-    } catch (error) {
+-      const message = error instanceof Error ? error.message : String(error);
+-      return {type: 'error', summary: 'python_exec: ' + message, errorMessage: message};
+-    }
+-  }
+-
+-  systemPromptFragment(_ctx: SystemPromptContext): string {
+-    return 'python_exec runs Python 3.12 locally after user approval. Current directory is the private Jarvis workspace; save reports or images there using pathlib or Pillow, and print a short result. Keep scripts bounded.';
+-  }
+-
+-  toToolDefinition(): ToolDefinition {
+-    return {
+-      type: 'function',
+-      function: {
+-        name: this.name,
+-        description:
+-          'Run Python 3.12 locally with user approval. Supports standard library and Pillow for files, documents, data and drawn images in the private workspace.',
+-        parameters: {
+-          type: 'object',
+-          properties: {
+-            code: {type: 'string', description: 'Python 3 source code to execute.'},
+-          },
+-          required: ['code'],
+-          additionalProperties: false,
+-        },
+-      },
+-    };
+-  }
+-}
++import {Alert, NativeModules, Platform} from 'react-native';
++import type {
++  TalentEngine,
++  TalentResult,
++  ToolDefinition,
++  SystemPromptContext,
++} from '../../services/talents/types';
++
++type Artifact = {
++  name: string;
++  path: string;
++  uri: string;
++  mime: string;
++  size: number;
++  image: boolean;
++};
++type PythonResult = {
++  stdout: string;
++  stderr: string;
++  error: string | null;
++  created: string[];
++  artifacts?: Artifact[];
++};
++interface LocalPythonNative {
++  runPython(code: string): Promise<{result: string; workspace: string}>;
++}
++
++const native = NativeModules.LocalPythonModule as LocalPythonNative | undefined;
++const ARTIFACT_MARKER = 'JARVIS_ARTIFACTS_JSON:';
++
++const confirmRisky = (code: string): Promise<boolean> => {
++  const risky =
++    /\b(?:subprocess|socket|requests|urllib|http\.client|shutil|os\.|Runtime|system\s*\()/.test(code) ||
++    /open\s*\(\s*['"]\//.test(code);
++  if (!risky) return Promise.resolve(true);
++  return new Promise(resolve => {
++    Alert.alert(
++      'Запустити розширений Python?',
++      'Скрипт використовує системні або мережеві API поза звичайною генерацією файлів.',
++      [
++        {text: 'Скасувати', style: 'cancel', onPress: () => resolve(false)},
++        {text: 'Запустити', onPress: () => resolve(true)},
++      ],
++      {cancelable: false},
++    );
++  });
++};
++
++export class PythonExecEngine implements TalentEngine {
++  readonly name = 'python_exec';
++  readonly recommendedContextTokens = 2200;
++
++  async execute(args: Record<string, any>): Promise<TalentResult> {
++    if (Platform.OS !== 'android' || !native) {
++      return {
++        type: 'error',
++        summary: 'python_exec: embedded Python is unavailable.',
++        errorMessage: 'Python execution is available only on Android.',
++      };
++    }
++    const code = typeof args.code === 'string' ? args.code : '';
++    if (!code.trim() || code.length > 30000) {
++      return {
++        type: 'error',
++        summary: 'python_exec: missing or oversized code.',
++        errorMessage: 'The code argument must contain 1–30,000 characters.',
++      };
++    }
++    try {
++      if (!(await confirmRisky(code))) {
++        return {type: 'text', summary: 'User declined extended Python execution.'};
++      }
++      const run = await native.runPython(code);
++      const result = JSON.parse(run.result) as PythonResult;
++      const artifacts = Array.isArray(result.artifacts) ? result.artifacts : [];
++      const human = [
++        result.stdout?.trim() ? 'stdout:\n' + result.stdout.trim() : '',
++        result.stderr?.trim() ? 'stderr:\n' + result.stderr.trim() : '',
++        result.error?.trim() ? 'error:\n' + result.error.trim() : '',
++        artifacts.length
++          ? 'Created artifacts:\n' +
++            artifacts.map(item => item.name + ' · ' + item.mime + ' · ' + item.size + ' B').join('\n')
++          : '',
++      ]
++        .filter(Boolean)
++        .join('\n\n')
++        .slice(0, 56000);
++      const marker = artifacts.length
++        ? '\n' + ARTIFACT_MARKER + JSON.stringify(artifacts)
++        : '';
++      const output = (human || 'Python completed without output.') + marker;
++      if (result.error) {
++        return {type: 'error', summary: output, errorMessage: human || result.error};
++      }
++      return {type: 'text', summary: output};
++    } catch (error) {
++      const message = error instanceof Error ? error.message : String(error);
++      return {type: 'error', summary: 'python_exec: ' + message, errorMessage: message};
++    }
++  }
++
++  systemPromptFragment(_ctx: SystemPromptContext): string {
++    return [
++      'ARTIFACT EXECUTION CONTRACT:',
++      'When the user asks to create an image, PDF, DOCX, HTML, source file, report, chart, card or other downloadable artifact, do not merely print Python or describe how to make it. Call python_exec and actually write the requested file into the current Jarvis workspace.',
++      'For PDF, legacy DOC and DOCX, prefer: from jarvis_artifacts import create_pdf, create_doc, create_docx. For simple visual cards use create_card; for charts and custom raster graphics use Pillow directly. Use UTF-8 and Ukrainian-capable Noto/Roboto system fonts.',
++      'After the tool returns Created artifacts, answer briefly and refer to the real artifact shown in chat. Do not paste the implementation code unless the user explicitly asks for code.',
++      'Python/Pillow can create designed graphics, charts, diagrams and composited images; it is not a diffusion model. Never claim a photorealistic AI image was synthesized unless a real image-generation model/tool actually produced it.',
++      'Keep generated paths relative, descriptive and with the correct extension. Reuse or update files when the user requests revisions.',
++    ].join(' ');
++  }
++
++  toToolDefinition(): ToolDefinition {
++    return {
++      type: 'function',
++      function: {
++        name: this.name,
++        description:
++          'Execute bounded Python 3.12 locally to analyze data or create real workspace artifacts. Pillow, pypdf and jarvis_artifacts helpers are available. Safe artifact scripts run without an extra dialog; system/network-oriented scripts require confirmation.',
++        parameters: {
++          type: 'object',
++          properties: {
++            code: {
++              type: 'string',
++              description:
++                'Python 3 source. For files, write into the current workspace and use jarvis_artifacts helpers where appropriate.',
++            },
++          },
++          required: ['code'],
++          additionalProperties: false,
++        },
++      },
++    };
++  }
++}
+diff --git a/src/agent/talents/WorkspaceEngine.ts b/src/agent/talents/WorkspaceEngine.ts
+--- a/src/agent/talents/WorkspaceEngine.ts
++++ b/src/agent/talents/WorkspaceEngine.ts
+@@ -1,155 +1,186 @@
+-import * as RNFS from '@dr.pogodin/react-native-fs';
+-import type {
+-  TalentEngine,
+-  TalentResult,
+-  ToolDefinition,
+-  SystemPromptContext,
+-} from '../../services/talents/types';
+-
+-const ROOT = RNFS.DocumentDirectoryPath + '/jarvis-workspace';
+-const MAX_TEXT_CHARS = 2000000;
+-const MAX_BASE64_CHARS = 16000000;
+-const MAX_READ_BYTES = 4000000;
+-
+-const safeRelativePath = (raw: unknown): string => {
+-  if (typeof raw !== 'string') throw new Error('path must be a string');
+-  const path = raw.replace(/\\/g, '/').replace(/^\/+/, '').trim();
+-  const parts = path.split('/');
+-  if (
+-    !path ||
+-    path.length > 240 ||
+-    path.includes('\u0000') ||
+-    parts.some(part => !part || part === '.' || part === '..')
+-  ) {
+-    throw new Error('Unsafe workspace path');
+-  }
+-  return path;
+-};
+-
+-const filePath = (relative: string): string => ROOT + '/' + relative;
+-
+-const ensureParent = async (relative: string): Promise<void> => {
+-  await RNFS.mkdir(ROOT);
+-  const slash = relative.lastIndexOf('/');
+-  if (slash > 0) await RNFS.mkdir(ROOT + '/' + relative.slice(0, slash));
+-};
+-
+-export class WorkspaceEngine implements TalentEngine {
+-  readonly name = 'workspace';
+-  readonly recommendedContextTokens = 1200;
+-
+-  async execute(args: Record<string, any>): Promise<TalentResult> {
+-    try {
+-      const operation = String(args.operation ?? '');
+-      if (operation === 'list') return this.list(args.path);
+-      const relative = safeRelativePath(args.path);
+-      if (operation === 'write_text') {
+-        const content = typeof args.content === 'string' ? args.content : '';
+-        if (content.length > MAX_TEXT_CHARS) throw new Error('Text file exceeds 2000000 characters');
+-        await ensureParent(relative);
+-        await RNFS.writeFile(filePath(relative), content, 'utf8');
+-        return {
+-          type: 'text',
+-          summary:
+-            'Created file: file://' +
+-            filePath(relative) +
+-            ' (' +
+-            content.length +
+-            ' characters)',
+-        };
+-      }
+-      if (operation === 'write_base64') {
+-        const content = typeof args.content === 'string' ? args.content : '';
+-        if (!content || content.length > MAX_BASE64_CHARS) {
+-          throw new Error('Base64 payload is empty or too large');
+-        }
+-        await ensureParent(relative);
+-        await RNFS.writeFile(filePath(relative), content, 'base64');
+-        const stat = await RNFS.stat(filePath(relative));
+-        return {
+-          type: 'text',
+-          summary:
+-            'Created binary file: file://' +
+-            filePath(relative) +
+-            ' (' +
+-            Number(stat.size) +
+-            ' bytes)',
+-        };
+-      }
+-      if (operation === 'read_text') {
+-        const stat = await RNFS.stat(filePath(relative));
+-        if (!stat.isFile() || Number(stat.size) > MAX_READ_BYTES) {
+-          throw new Error('File is not readable text or exceeds 4 MB');
+-        }
+-        const content = await RNFS.readFile(filePath(relative), 'utf8');
+-        return {type: 'text', summary: 'File ' + relative + ':\n' + content.slice(0, MAX_TEXT_CHARS)};
+-      }
+-      if (operation === 'delete') {
+-        if (await RNFS.exists(filePath(relative))) await RNFS.unlink(filePath(relative));
+-        return {type: 'text', summary: 'Deleted workspace item: ' + relative};
+-      }
+-      return {
+-        type: 'error',
+-        summary: 'workspace: unsupported operation ' + operation,
+-        errorMessage: 'Unsupported workspace operation.',
+-      };
+-    } catch (error) {
+-      const message = error instanceof Error ? error.message : String(error);
+-      return {type: 'error', summary: 'workspace: ' + message, errorMessage: message};
+-    }
+-  }
+-
+-  private async list(rawPath: unknown): Promise<TalentResult> {
+-    await RNFS.mkdir(ROOT);
+-    const relative =
+-      typeof rawPath === 'string' && rawPath.trim() ? safeRelativePath(rawPath) : '';
+-    const target = relative ? filePath(relative) : ROOT;
+-    const items = await RNFS.readDir(target);
+-    const summary = items
+-      .slice(0, 200)
+-      .map(item => {
+-        const kind = item.isDirectory() ? 'dir ' : 'file';
+-        const size = item.isFile() ? ' ' + Number(item.size) + ' B' : '';
+-        return kind + ' ' + item.name + size;
+-      })
+-      .join('\n');
+-    return {
+-      type: 'text',
+-      summary: summary || 'Workspace directory is empty: file://' + target,
+-    };
+-  }
+-
+-  systemPromptFragment(_ctx: SystemPromptContext): string {
+-    return 'workspace gives you a private Jarvis file workspace. Use write_text for Markdown, JSON, CSV, HTML, SVG, source code and other text artifacts; write_base64 for bounded binary payloads; list/read_text/delete for follow-up work. Never invent a file path: use the exact path returned by the tool.';
+-  }
+-
+-  toToolDefinition(): ToolDefinition {
+-    return {
+-      type: 'function',
+-      function: {
+-        name: this.name,
+-        description:
+-          'Create and manage files in the app-private Jarvis workspace. Supports text, base64 binary data, reading text, listing and deletion.',
+-        parameters: {
+-          type: 'object',
+-          properties: {
+-            operation: {
+-              type: 'string',
+-              enum: ['write_text', 'write_base64', 'read_text', 'list', 'delete'],
+-            },
+-            path: {
+-              type: 'string',
+-              description: 'Relative path such as reports/report.md or images/card.svg.',
+-            },
+-            content: {
+-              type: 'string',
+-              description: 'Text or base64 payload for write operations.',
+-            },
+-          },
+-          required: ['operation'],
+-          additionalProperties: false,
+-        },
+-      },
+-    };
+-  }
+-}
++import * as RNFS from '@dr.pogodin/react-native-fs';
++import type {
++  TalentEngine,
++  TalentResult,
++  ToolDefinition,
++  SystemPromptContext,
++} from '../../services/talents/types';
++
++const ROOT = RNFS.DocumentDirectoryPath + '/jarvis-workspace';
++const MAX_TEXT_CHARS = 2000000;
++const MAX_BASE64_CHARS = 16000000;
++const MAX_READ_BYTES = 4000000;
++const ARTIFACT_MARKER = 'JARVIS_ARTIFACTS_JSON:';
++
++const mimeFor = (relative: string): string => {
++  const ext = relative.toLowerCase().split('.').pop() ?? '';
++  const table: Record<string, string> = {
++    txt: 'text/plain', md: 'text/markdown', html: 'text/html', htm: 'text/html',
++    css: 'text/css', js: 'text/javascript', jsx: 'text/javascript',
++    ts: 'text/typescript', tsx: 'text/typescript', json: 'application/json',
++    xml: 'application/xml', csv: 'text/csv', py: 'text/x-python',
++    svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
++    webp: 'image/webp', pdf: 'application/pdf',
++    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
++  };
++  return table[ext] ?? 'application/octet-stream';
++};
++
++const artifactMarker = async (relative: string): Promise<string> => {
++  const full = filePath(relative);
++  const stat = await RNFS.stat(full);
++  const mime = mimeFor(relative);
++  return '\n' + ARTIFACT_MARKER + JSON.stringify([{
++    name: relative.split('/').pop() ?? relative,
++    path: relative,
++    uri: 'file://' + full,
++    mime,
++    size: Number(stat.size),
++    image: mime.startsWith('image/'),
++  }]);
++};
++
++const safeRelativePath = (raw: unknown): string => {
++  if (typeof raw !== 'string') throw new Error('path must be a string');
++  const path = raw.replace(/\\/g, '/').replace(/^\/+/, '').trim();
++  const parts = path.split('/');
++  if (
++    !path ||
++    path.length > 240 ||
++    path.includes('\u0000') ||
++    parts.some(part => !part || part === '.' || part === '..')
++  ) {
++    throw new Error('Unsafe workspace path');
++  }
++  return path;
++};
++
++const filePath = (relative: string): string => ROOT + '/' + relative;
++
++const ensureParent = async (relative: string): Promise<void> => {
++  await RNFS.mkdir(ROOT);
++  const slash = relative.lastIndexOf('/');
++  if (slash > 0) await RNFS.mkdir(ROOT + '/' + relative.slice(0, slash));
++};
++
++export class WorkspaceEngine implements TalentEngine {
++  readonly name = 'workspace';
++  readonly recommendedContextTokens = 1200;
++
++  async execute(args: Record<string, any>): Promise<TalentResult> {
++    try {
++      const operation = String(args.operation ?? '');
++      if (operation === 'list') return this.list(args.path);
++      const relative = safeRelativePath(args.path);
++      if (operation === 'write_text') {
++        const content = typeof args.content === 'string' ? args.content : '';
++        if (content.length > MAX_TEXT_CHARS) throw new Error('Text file exceeds 2000000 characters');
++        await ensureParent(relative);
++        await RNFS.writeFile(filePath(relative), content, 'utf8');
++        return {
++          type: 'text',
++          summary:
++            'Created file: file://' +
++            filePath(relative) +
++            ' (' +
++            content.length +
++            ' characters)' +
++            (await artifactMarker(relative)),
++        };
++      }
++      if (operation === 'write_base64') {
++        const content = typeof args.content === 'string' ? args.content : '';
++        if (!content || content.length > MAX_BASE64_CHARS) {
++          throw new Error('Base64 payload is empty or too large');
++        }
++        await ensureParent(relative);
++        await RNFS.writeFile(filePath(relative), content, 'base64');
++        const stat = await RNFS.stat(filePath(relative));
++        return {
++          type: 'text',
++          summary:
++            'Created binary file: file://' +
++            filePath(relative) +
++            ' (' +
++            Number(stat.size) +
++            ' bytes)' +
++            (await artifactMarker(relative)),
++        };
++      }
++      if (operation === 'read_text') {
++        const stat = await RNFS.stat(filePath(relative));
++        if (!stat.isFile() || Number(stat.size) > MAX_READ_BYTES) {
++          throw new Error('File is not readable text or exceeds 4 MB');
++        }
++        const content = await RNFS.readFile(filePath(relative), 'utf8');
++        return {type: 'text', summary: 'File ' + relative + ':\n' + content.slice(0, MAX_TEXT_CHARS)};
++      }
++      if (operation === 'delete') {
++        if (await RNFS.exists(filePath(relative))) await RNFS.unlink(filePath(relative));
++        return {type: 'text', summary: 'Deleted workspace item: ' + relative};
++      }
++      return {
++        type: 'error',
++        summary: 'workspace: unsupported operation ' + operation,
++        errorMessage: 'Unsupported workspace operation.',
++      };
++    } catch (error) {
++      const message = error instanceof Error ? error.message : String(error);
++      return {type: 'error', summary: 'workspace: ' + message, errorMessage: message};
++    }
++  }
++
++  private async list(rawPath: unknown): Promise<TalentResult> {
++    await RNFS.mkdir(ROOT);
++    const relative =
++      typeof rawPath === 'string' && rawPath.trim() ? safeRelativePath(rawPath) : '';
++    const target = relative ? filePath(relative) : ROOT;
++    const items = await RNFS.readDir(target);
++    const summary = items
++      .slice(0, 200)
++      .map(item => {
++        const kind = item.isDirectory() ? 'dir ' : 'file';
++        const size = item.isFile() ? ' ' + Number(item.size) + ' B' : '';
++        return kind + ' ' + item.name + size;
++      })
++      .join('\n');
++    return {
++      type: 'text',
++      summary: summary || 'Workspace directory is empty: file://' + target,
++    };
++  }
++
++  systemPromptFragment(_ctx: SystemPromptContext): string {
++    return 'workspace gives you a private Jarvis file workspace. Use write_text for Markdown, JSON, CSV, HTML, SVG, source code and other text artifacts; write_base64 for bounded binary payloads; list/read_text/delete for follow-up work. When the user asks for a file, actually create it and let the artifact surface expose it in chat; do not substitute code-only instructions. Never invent a file path: use the exact path returned by the tool.';
++  }
++
++  toToolDefinition(): ToolDefinition {
++    return {
++      type: 'function',
++      function: {
++        name: this.name,
++        description:
++          'Create and manage files in the app-private Jarvis workspace. Supports text, base64 binary data, reading text, listing and deletion.',
++        parameters: {
++          type: 'object',
++          properties: {
++            operation: {
++              type: 'string',
++              enum: ['write_text', 'write_base64', 'read_text', 'list', 'delete'],
++            },
++            path: {
++              type: 'string',
++              description: 'Relative path such as reports/report.md or images/card.svg.',
++            },
++            content: {
++              type: 'string',
++              description: 'Text or base64 payload for write operations.',
++            },
++          },
++          required: ['operation'],
++          additionalProperties: false,
++        },
++      },
++    };
++  }
++}
+diff --git a/src/agent/talents/ArtifactTalentUI.tsx b/src/agent/talents/ArtifactTalentUI.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/agent/talents/ArtifactTalentUI.tsx
+@@ -0,0 +1,77 @@
++import React from 'react';
++import {Image, View} from 'react-native';
++import Share from 'react-native-share';
++import {Button, Card, Text} from 'react-native-paper';
++
++import type {TalentUI} from '../../services/talents/TalentUIRegistry';
++import type {TalentResult} from '../../services/talents/types';
++
++type Artifact = {
++  name: string;
++  path: string;
++  uri: string;
++  mime: string;
++  size: number;
++  image?: boolean;
++};
++
++const MARKER = 'JARVIS_ARTIFACTS_JSON:';
++
++const artifactsFrom = (result: TalentResult): Artifact[] => {
++  if (result.type !== 'text') return [];
++  const index = result.summary.lastIndexOf(MARKER);
++  if (index < 0) return [];
++  try {
++    const parsed = JSON.parse(result.summary.slice(index + MARKER.length).trim());
++    return Array.isArray(parsed) ? parsed.filter(item => item && typeof item.uri === 'string') : [];
++  } catch {
++    return [];
++  }
++};
++
++const readableSize = (bytes: number): string => {
++  if (!Number.isFinite(bytes) || bytes < 0) return '';
++  if (bytes < 1024) return Math.round(bytes) + ' B';
++  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
++  return (bytes / 1024 / 1024).toFixed(1) + ' MB';
++};
++
++export class ArtifactTalentUI implements TalentUI {
++  constructor(readonly name: string) {}
++
++  renderResult(result: TalentResult): React.ReactNode {
++    const artifacts = artifactsFrom(result);
++    if (!artifacts.length) return null;
++    return (
++      <View style={{gap: 8, marginVertical: 6}}>
++        {artifacts.map((artifact, index) => (
++          <Card key={artifact.uri + String(index)} mode="outlined">
++            {artifact.image && (
++              <Image
++                source={{uri: artifact.uri}}
++                style={{width: '100%', height: 240}}
++                resizeMode="contain"
++              />
++            )}
++            <Card.Content style={{gap: 4, paddingTop: 10}}>
++              <Text variant="titleSmall" selectable>{artifact.name}</Text>
++              <Text variant="bodySmall">
++                {artifact.mime + (artifact.size ? ' · ' + readableSize(artifact.size) : '')}
++              </Text>
++              <Button
++                mode="contained-tonal"
++                compact
++                onPress={() => Share.open({
++                  url: artifact.uri,
++                  type: artifact.mime || undefined,
++                  failOnCancel: false,
++                }).catch(() => undefined)}>
++                Поділитися / зберегти
++              </Button>
++            </Card.Content>
++          </Card>
++        ))}
++      </View>
++    );
++  }
++}
+diff --git a/src/services/talents/registerTalentUIs.ts b/src/services/talents/registerTalentUIs.ts
+--- a/src/services/talents/registerTalentUIs.ts
++++ b/src/services/talents/registerTalentUIs.ts
+@@ -2,5 +2,6 @@ import {talentUIRegistry} from './TalentUIRegistry';
+ import {RenderHtmlTalentUI} from './RenderHtmlTalentUI';
+ import {WebSearchTalentUI} from './WebSearchTalentUI';
++import {ArtifactTalentUI} from '../../agent/talents/ArtifactTalentUI';
+ 
+ let registered = false;
+ 
+@@ -11,6 +12,8 @@ export function registerDefaultTalentUIs(): void {
+   }
+   talentUIRegistry.register(new RenderHtmlTalentUI());
+   talentUIRegistry.register(new WebSearchTalentUI());
++  talentUIRegistry.register(new ArtifactTalentUI('python_exec'));
++  talentUIRegistry.register(new ArtifactTalentUI('workspace'));
+   registered = true;
+ }
+ 
+diff --git a/src/store/__tests__/PalStore.test.ts b/src/store/__tests__/PalStore.test.ts
+--- a/src/store/__tests__/PalStore.test.ts
++++ b/src/store/__tests__/PalStore.test.ts
+@@ -401,7 +401,7 @@ describe('PalStore', () => {
+       // observed objects in Proxies, so Object.is equality is brittle;
+       // value equality verifies the field wasn't cleared or rewritten).
+       expect(jarvis?.defaultModel).toEqual(boundModel);
+-      expect(jarvis?.pact?.talents?.map(t => t.name)).toEqual(['workspace', 'python_exec', 'android_document']);
++      expect(jarvis?.pact?.talents?.map(t => t.name)).toEqual(['web_search', 'read_url', 'workspace', 'python_exec', 'android_document']);
+       expect(palRepository.createPal).not.toHaveBeenCalled();
+     });
+ 
+diff --git a/src/store/onboarding/onboardingPals.ts b/src/store/onboarding/onboardingPals.ts
+--- a/src/store/onboarding/onboardingPals.ts
++++ b/src/store/onboarding/onboardingPals.ts
+@@ -114,11 +114,13 @@ const PAL_PIP: OnboardingPalDef = {
+   key: 'pip',
+   name: 'Jarvis',
+   description:
+     'A private multilingual pocket AI with offline knowledge.',
+   systemPrompt:
+-    "You are Jarvis, AuthorChe's private pocket AI. Reply in the user's language, with Ukrainian as the default. Use the supplied offline or web evidence accurately, cite article titles or source URLs, and never claim to control Android. Say if an archive may be outdated.",
++    "You are Jarvis, AuthorChe's private pocket AI. Reply in the user's language, with Ukrainian as the default. Operate as an agent, not a code-only chatbot. For current or external facts, use web_search first and read_url for important sources; never claim you searched if the tool failed. For an image, PDF, DOCX, HTML page, source file, report or other artifact, use the available workspace/python tools to create the actual file and return the resulting artifact in chat instead of merely printing implementation code. Use Android document tools to read user-selected files and offline ZIM evidence when relevant. Clearly mark offline knowledge as potentially outdated. Never claim a photorealistic AI image was generated unless a real image-generation model produced it.",
+   color: ['#063B32', '#63E6BE'],
+   pact: {talents: [
++    {name: 'web_search', necessity: 'optional'},
++    {name: 'read_url', necessity: 'optional'},
+     {name: 'workspace', necessity: 'optional'},
+     {name: 'python_exec', necessity: 'optional'},
+     {name: 'android_document', necessity: 'optional'},
+diff --git a/src/store/PalStore.ts b/src/store/PalStore.ts
+--- a/src/store/PalStore.ts
++++ b/src/store/PalStore.ts
+@@ -55,8 +55,11 @@ import {downloadPalThumbnail, deletePalThumbnail} from '../utils/imageUtils';
+ const LOOKIE_SEEDED_KEY = 'PalStore.builtin.Lookie.seeded';
+ const JARVIS_SEEDED_KEY = 'PalStore.builtin.Jarvis.seeded';
+ const JARVIS_TOOLS_V07_KEY = 'PalStore.builtin.Jarvis.tools.v07';
+ const JARVIS_TOOLS_V08_KEY = 'PalStore.builtin.Jarvis.tools.v08';
+-const JARVIS_FILE_TALENTS = ['workspace', 'python_exec', 'android_document'].map(name => ({name, necessity: 'optional' as const}));
++const JARVIS_TOOLS_V09_KEY = 'PalStore.builtin.Jarvis.tools.v09';
++const JARVIS_FILE_TALENTS = ['web_search', 'read_url', 'workspace', 'python_exec', 'android_document'].map(name => ({name, necessity: 'optional' as const}));
+ const JARVIS_ID_KEY = 'PalStore.builtin.Jarvis.id';
++const JARVIS_SYSTEM_PROMPT =
++  "You are Jarvis, AuthorChe's private pocket AI. Reply in the user's language, with Ukrainian as the default. Operate as an agent, not a code-only chatbot. For current or external facts, use web_search first and read_url for important sources; never claim you searched if the tool failed. For an image, PDF, DOCX, HTML page, source file, report or other artifact, use the available workspace/python tools to create the actual file and return the resulting artifact in chat instead of merely printing implementation code. Use Android document tools to read user-selected files and offline ZIM evidence when relevant. Clearly mark offline knowledge as potentially outdated. Never claim a photorealistic AI image was generated unless a real image-generation model produced it.";
+ 
+ class PalStore {
+@@ -797,16 +801,19 @@ class PalStore {
+   private async initializeJarvisPal(force = false): Promise<void> {
+     try {
+       if (!force && (await AsyncStorage.getItem(JARVIS_SEEDED_KEY)) === 'true' &&
+-          (await AsyncStorage.getItem(JARVIS_TOOLS_V08_KEY)) === 'true') {
++          (await AsyncStorage.getItem(JARVIS_TOOLS_V09_KEY)) === 'true') {
+         return;
+       }
+ 
+       const existing = await this.findJarvisPal();
+       if (existing) {
+         await AsyncStorage.setItem(JARVIS_ID_KEY, existing.id);
+-        if (await AsyncStorage.getItem(JARVIS_TOOLS_V08_KEY) !== 'true') {
+-          await this.updatePal(existing.id, {pact: {talents: JARVIS_FILE_TALENTS}});
+-          await AsyncStorage.setItem(JARVIS_TOOLS_V08_KEY, 'true');
++        if (await AsyncStorage.getItem(JARVIS_TOOLS_V09_KEY) !== 'true') {
++          await this.updatePal(existing.id, {
++            pact: {talents: JARVIS_FILE_TALENTS},
++            ...(!existing.isSystemPromptChanged ? {systemPrompt: JARVIS_SYSTEM_PROMPT} : {}),
++          });
++          await AsyncStorage.setItem(JARVIS_TOOLS_V09_KEY, 'true');
+         }
+         await AsyncStorage.setItem(JARVIS_SEEDED_KEY, 'true');
+         return;
+@@ -817,8 +826,7 @@ class PalStore {
+         name: 'Jarvis',
+         description:
+           'A private multilingual pocket AI with offline knowledge.',
+-        systemPrompt:
+-          "You are Jarvis, a private pocket AI. Reply in the user's language, with Ukrainian as the default. Use supplied offline encyclopedia excerpts and web evidence accurately, citing article titles or URLs. Never claim to have performed Android actions. Say when an archive may be outdated. Be concise and clear.",
++        systemPrompt: JARVIS_SYSTEM_PROMPT,
+         isSystemPromptChanged: false,
+         useAIPrompt: false,
+         defaultModel: undefined,
+@@ -835,7 +844,8 @@ class PalStore {
+       await AsyncStorage.setItem(JARVIS_ID_KEY, created.id);
+       await AsyncStorage.setItem(JARVIS_SEEDED_KEY, 'true');
+       await AsyncStorage.setItem(JARVIS_TOOLS_V07_KEY, 'true');
+       await AsyncStorage.setItem(JARVIS_TOOLS_V08_KEY, 'true');
++      await AsyncStorage.setItem(JARVIS_TOOLS_V09_KEY, 'true');
+     } catch (error) {
+       console.error('Error initializing Jarvis agent:', error);
+     }
+
+diff --git a/src/agent/talents/AndroidDocumentEngine.ts b/src/agent/talents/AndroidDocumentEngine.ts
+--- a/src/agent/talents/AndroidDocumentEngine.ts
++++ b/src/agent/talents/AndroidDocumentEngine.ts
+@@ -1,5 +1,5 @@
+ import {Alert} from 'react-native';
+-import type {TalentEngine, TalentResult, ToolDefinition} from '../../services/talents/types';
++import type {TalentEngine, TalentResult, ToolDefinition, SystemPromptContext} from '../../services/talents/types';
+ import {androidDocuments} from '../native/AndroidDocuments';
+ 
+ const confirm = (title: string, detail: string): Promise<boolean> => new Promise(resolve => {
+@@ -38,10 +39,18 @@ export class AndroidDocumentEngine implements TalentEngine {
+       return {type: 'error', summary: message, errorMessage: message};
+     }
+   }
++  systemPromptFragment(_ctx: SystemPromptContext): string {
++    return [
++      'android_document opens user-selected Android documents and extracts text locally.',
++      'Supported inputs include TXT/Markdown/source code/HTML/JSON/XML/CSV, PDF with extractable text, DOC/DOCX, RTF, ODT, PPTX and XLSX.',
++      'For an uploaded-looking request such as "analyze this PDF" or "work with my document", call pick_read so Android shows the system file picker. Never ask the user to paste the document manually when this tool is available.',
++      'Scanned image-only PDFs may have no extractable text because OCR is not bundled.',
++    ].join(' ');
++  }
+   toToolDefinition(): ToolDefinition {
+     return {type: 'function', function: {
+       name: this.name,
+-      description: 'Open Android system file picker and read text files chosen by the user; write only to a previously chosen document after confirmation.',
++      description: 'Open Android system file picker and locally parse TXT/code/HTML/PDF/DOC/DOCX/RTF/ODT/PPTX/XLSX files chosen by the user; write plain-text formats only to a previously chosen document after confirmation.',
+       parameters: {type: 'object', additionalProperties: false, required: ['operation'], properties: {
+         operation: {type: 'string', enum: ['pick_read', 'read', 'write']},
+         uri: {type: 'string', description: 'content:// URI from the picker'},
+diff --git a/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx b/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx
+--- a/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx
++++ b/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx
+@@ -24,8 +24,8 @@ export const OfflineKnowledgeCard: React.FC = () => {
+     <Card.Title title="Офлайн-бібліотека" />
+     <Card.Content style={{gap: 8, paddingBottom: 16}}>
+       <Text variant="bodyMedium">{archive.ready ? `Підключено: ${archive.name}` : 'Підключіть архів Wikipedia у форматі ZIM. Після цього Jarvis шукатиме в ньому автоматично без інтернету.'}</Text>
+-      <Text variant="bodySmall">Для всієї Вікіпедії оберіть повний архів Wikipedia ZIM (наприклад, ukwiki або enwiki з позначкою nopic чи maxi). Версія mini містить лише частину статей. Завантажте архів із каталогу Kiwix, залиште його у пам’яті телефону й оберіть файл нижче; повний архів може займати десятки гігабайтів.</Text>
+-      <Button mode="contained-tonal" onPress={choose}>Обрати файл ZIM</Button>
++      <Text variant="bodySmall">Можна додати кілька .zim архівів — жорсткого ліміту кількості немає, межа визначається вільною пам’яттю пристрою. Jarvis копіює вибраний ZIM у власне сховище, щоб libzim отримував справжній файловий шлях замість /dev/fd. Тому для імпорту тимчасово потрібне місце приблизно під ще одну копію архіву.</Text>
++      <Button mode="contained-tonal" onPress={choose}>{archive.ready ? 'Додати ще ZIM' : 'Додати ZIM'}</Button>
+       <Button mode="text" onPress={() => Linking.openURL('https://library.kiwix.org/#lang=uk')}>Відкрити каталог Kiwix</Button>
+       {archive.ready && <Button mode="text" onPress={forget}>Відключити архів</Button>}
+       {!!message && <Text variant="bodySmall" selectable>{message}</Text>}
+
+
+diff --git a/src/services/talents/searchAccess.ts b/src/services/talents/searchAccess.ts
+--- a/src/services/talents/searchAccess.ts
++++ b/src/services/talents/searchAccess.ts
+@@ -9,6 +9,8 @@ export interface SearchAccess {
+    * Consent is enforced here, not just in the Settings UI.
+    */
+   canSearch(): boolean;
++  /** Ask for explicit consent at the moment a search is requested. */
++  requestConsent?(): Promise<boolean>;
+   getResultCount(): number;
+   readWithDefaultReader(url: string): Promise<PageContent>;
+ }
+diff --git a/src/services/talents/WebSearchEngine.ts b/src/services/talents/WebSearchEngine.ts
+--- a/src/services/talents/WebSearchEngine.ts
++++ b/src/services/talents/WebSearchEngine.ts
+@@ -50,16 +50,24 @@ export class WebSearchEngine implements TalentEngine {
+       };
+     }
+ 
++    const provider = this.access.getActiveProvider();
+     if (!this.access.canSearch()) {
+-      const provider = this.access.getActiveProvider();
+-      return {
+-        type: 'error',
+-        summary: `web_search: ${provider.id} not enabled`,
+-        errorMessage: `Internet search is not enabled. Accept the disclosure and configure ${provider.id} in Settings → Internet Search.`,
+-      };
++      let granted = false;
++      if (provider.id === 'device_web' && this.access.requestConsent) {
++        granted = await this.access.requestConsent();
++      }
++      if (!granted && !this.access.canSearch()) {
++        return {
++          type: 'error',
++          summary: `web_search: ${provider.id} not enabled`,
++          errorMessage:
++            provider.id === 'device_web'
++              ? 'Internet search permission was not granted.'
++              : `Internet search is not enabled. Accept the disclosure and configure ${provider.id} in Settings → Internet Search.`,
++        };
++      }
+     }
+ 
+-    const provider = this.access.getActiveProvider();
+     const maxResults = this.access.getResultCount();
+ 
+     let hits: SearchHit[];
+@@ -133,7 +141,8 @@ export class WebSearchEngine implements TalentEngine {
+     return (
+       `Today's date is ${today}. You can search the web with web_search${readUrl}. ` +
+       `For time-sensitive or factual questions, search first; usually one or two searches suffice — ` +
+-      `you have a budget of ${budget} tool calls. Answer using the facts in the results and cite ` +
++      `you have a budget of ${budget} tool calls. The first Device Web search may show a one-time permission dialog; call the tool normally and let the app handle it. ` +
++      'Answer using the facts in the results and cite ' +
+       'source URLs. If the results do not contain the answer, say so rather than guessing.'
+     );
+   }
+diff --git a/src/services/talents/index.ts b/src/services/talents/index.ts
+--- a/src/services/talents/index.ts
++++ b/src/services/talents/index.ts
+@@ -1,3 +1,4 @@
++import {Alert} from 'react-native';
+ import {RenderHtmlEngine} from './RenderHtmlEngine';
+ import {CalculateEngine} from './CalculateEngine';
+ import {DatetimeEngine} from './DatetimeEngine';
+@@ -40,6 +41,26 @@ function createSearchAccess(): SearchAccess {
+       return createSearchProvider(id, () => searchProviderStore.getKey(id));
+     },
+     canSearch: () => searchProviderStore.canSearch,
++    requestConsent: async () => {
++      if (searchProviderStore.canSearch) return true;
++      return new Promise<boolean>(resolve => {
++        Alert.alert(
++          'Дозволити інтернет-пошук?',
++          'Jarvis надішле текст пошукового запиту вибраному пошуковому сервісу. Для Device Web API-ключ не потрібен.',
++          [
++            {text: 'Скасувати', style: 'cancel', onPress: () => resolve(false)},
++            {
++              text: 'Дозволити',
++              onPress: () => {
++                searchProviderStore.setConsent(true);
++                resolve(true);
++              },
++            },
++          ],
++          {cancelable: false},
++        );
++      });
++    },
+     getResultCount: () => searchProviderStore.resultCount,
+     readWithDefaultReader,
+   };

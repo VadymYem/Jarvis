@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Jarvis | AuthorAi</string>
+    <string name="accessibility_service_name">Jarvis | AuthorAi — керування пристроєм</string>
+    <string name="accessibility_description">Дає агенту змогу бачити структуру екрана та виконувати лише підтверджені користувачем дії.</string>
+</resources>

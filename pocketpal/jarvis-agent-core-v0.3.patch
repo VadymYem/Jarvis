@@ -1,0 +1,671 @@
+diff --git a/android/app/build.gradle b/android/app/build.gradle
+--- a/android/app/build.gradle
++++ b/android/app/build.gradle
+@@ -85,8 +85,8 @@ android {
+         applicationId "top.authorche.agent"
+         minSdkVersion rootProject.ext.minSdkVersion
+         targetSdkVersion rootProject.ext.targetSdkVersion
+-        versionCode 2
+-        versionName "0.2.0"
++        versionCode 3
++        versionName "0.3.0"
+         ndk {
+             abiFilters "arm64-v8a"
+         }
+diff --git a/android/app/src/main/AndroidManifest.xml b/android/app/src/main/AndroidManifest.xml
+--- a/android/app/src/main/AndroidManifest.xml
++++ b/android/app/src/main/AndroidManifest.xml
+@@ -13,6 +13,7 @@
+         <intent>
+             <action android:name="android.speech.RecognitionService" />
+         </intent>
++        <package android:name="com.termux" />
+     </queries>
+ 
+     <!-- Permissions -->
+@@ -22,6 +23,7 @@
+     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+     <uses-permission android:name="android.permission.SET_ALARM" />
+     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
++    <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+     <uses-feature android:name="android.hardware.camera" android:required="false" />
+     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+ 
+@@ -78,6 +80,10 @@
+             <data android:scheme="jarvis-authorai" android:host="checkout" />
+         </intent-filter>
+       </activity>
++
++        <service
++            android:name="top.authorche.agent.JarvisTermuxResultService"
++            android:exported="false" />
+ 
+         <!-- Optional native library for OpenCL (GPU acceleration) -->
+         <uses-native-library
+diff --git a/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt b/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
+--- a/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
++++ b/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
+@@ -7,7 +7,12 @@ import com.facebook.react.uimanager.ViewManager
+ 
+ class AgentDevicePackage : ReactPackage {
+   override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> =
+-    listOf(AgentDeviceModule(reactContext), ExternalSpeechModule(reactContext), LiveVoiceModule(reactContext))
++    listOf(
++      AgentDeviceModule(reactContext),
++      ExternalSpeechModule(reactContext),
++      LiveVoiceModule(reactContext),
++      JarvisTermuxModule(reactContext)
++    )
+ 
+   override fun createViewManagers(
+     reactContext: ReactApplicationContext
+diff --git a/android/app/src/main/java/top/authorche/agent/JarvisTermuxModule.kt b/android/app/src/main/java/top/authorche/agent/JarvisTermuxModule.kt
+new file mode 100644
+--- /dev/null
++++ b/android/app/src/main/java/top/authorche/agent/JarvisTermuxModule.kt
+@@ -0,0 +1,205 @@
++package top.authorche.agent
++
++import android.app.Activity
++import android.app.PendingIntent
++import android.app.Service
++import android.content.Intent
++import android.content.pm.PackageManager
++import android.os.Build
++import android.os.Handler
++import android.os.IBinder
++import android.os.Looper
++import com.facebook.react.bridge.Arguments
++import com.facebook.react.bridge.Promise
++import com.facebook.react.bridge.ReactApplicationContext
++import com.facebook.react.bridge.ReactContextBaseJavaModule
++import com.facebook.react.bridge.ReactMethod
++import com.facebook.react.bridge.ReadableArray
++import java.util.concurrent.ConcurrentHashMap
++import java.util.concurrent.atomic.AtomicInteger
++
++private const val TERMUX_PACKAGE = "com.termux"
++private const val TERMUX_PERMISSION = "com.termux.permission.RUN_COMMAND"
++private const val TERMUX_SERVICE = "com.termux.app.RunCommandService"
++private const val TERMUX_ACTION = "com.termux.RUN_COMMAND"
++private const val EXTRA_PATH = "com.termux.RUN_COMMAND_PATH"
++private const val EXTRA_ARGUMENTS = "com.termux.RUN_COMMAND_ARGUMENTS"
++private const val EXTRA_WORKDIR = "com.termux.RUN_COMMAND_WORKDIR"
++private const val EXTRA_BACKGROUND = "com.termux.RUN_COMMAND_BACKGROUND"
++private const val EXTRA_LABEL = "com.termux.RUN_COMMAND_COMMAND_LABEL"
++private const val EXTRA_DESCRIPTION = "com.termux.RUN_COMMAND_COMMAND_DESCRIPTION"
++private const val EXTRA_PENDING_INTENT = "com.termux.RUN_COMMAND_PENDING_INTENT"
++private const val TERMUX_HOME = "/data/data/com.termux/files/home"
++private const val TERMUX_PYTHON = "/data/data/com.termux/files/usr/bin/python"
++private const val MAX_CODE_CHARS = 50000
++private const val MAX_ARGUMENTS = 20
++private const val MAX_ARGUMENT_CHARS = 1000
++private const val MAX_RESULT_CHARS = 64000
++private const val TIMEOUT_MS = 45000L
++
++private object JarvisTermuxBroker {
++  private val nextId = AtomicInteger(7000)
++  private val pending = ConcurrentHashMap<Int, Promise>()
++  private val handler = Handler(Looper.getMainLooper())
++
++  fun register(promise: Promise): Int {
++    val id = nextId.updateAndGet { if (it == Int.MAX_VALUE) 7000 else it + 1 }
++    pending[id] = promise
++    handler.postDelayed({
++      pending.remove(id)?.reject(
++        "TERMUX_TIMEOUT",
++        "Termux did not return a result within 45 seconds."
++      )
++    }, TIMEOUT_MS)
++    return id
++  }
++
++  fun reject(id: Int, code: String, message: String, error: Throwable? = null) {
++    val promise = pending.remove(id) ?: return
++    if (error != null) promise.reject(code, message, error) else promise.reject(code, message)
++  }
++
++  fun complete(id: Int, exitCode: Int, stdout: String, stderr: String, error: String) {
++    val promise = pending.remove(id) ?: return
++    val result = Arguments.createMap().apply {
++      putInt("exitCode", exitCode)
++      putString("stdout", stdout.take(MAX_RESULT_CHARS))
++      putString("stderr", stderr.take(MAX_RESULT_CHARS))
++      putString("error", error.take(MAX_RESULT_CHARS))
++    }
++    promise.resolve(result)
++  }
++}
++
++class JarvisTermuxModule(private val context: ReactApplicationContext) :
++  ReactContextBaseJavaModule(context) {
++
++  override fun getName(): String = "JarvisTermuxModule"
++
++  @ReactMethod
++  fun getStatus(promise: Promise) {
++    val installed = runCatching {
++      context.packageManager.getPackageInfo(TERMUX_PACKAGE, 0)
++    }.isSuccess
++    val permission =
++      context.checkSelfPermission(TERMUX_PERMISSION) == PackageManager.PERMISSION_GRANTED
++    promise.resolve(Arguments.createMap().apply {
++      putBoolean("installed", installed)
++      putBoolean("permission", permission)
++      putBoolean("ready", installed && permission)
++    })
++  }
++
++  @ReactMethod
++  fun runPython(code: String, arguments: ReadableArray?, promise: Promise) {
++    if (code.isBlank() || code.length > MAX_CODE_CHARS || '\u0000' in code) {
++      promise.reject(
++        "PYTHON_CODE_INVALID",
++        "Python code must contain 1-50000 characters and no NUL bytes."
++      )
++      return
++    }
++    val args = mutableListOf<String>()
++    if (arguments != null) {
++      if (arguments.size() > MAX_ARGUMENTS) {
++        promise.reject("PYTHON_ARGS_INVALID", "Too many Python arguments.")
++        return
++      }
++      for (index in 0 until arguments.size()) {
++        val value = arguments.getString(index) ?: ""
++        if (value.length > MAX_ARGUMENT_CHARS || '\u0000' in value) {
++          promise.reject("PYTHON_ARGS_INVALID", "Invalid Python argument.")
++          return
++        }
++        args += value
++      }
++    }
++    execute(
++      executable = TERMUX_PYTHON,
++      arguments = listOf("-c", code) + args,
++      description = "Run approved Jarvis Python task",
++      promise = promise
++    )
++  }
++
++  private fun execute(
++    executable: String,
++    arguments: List<String>,
++    description: String,
++    promise: Promise
++  ) {
++    val installed = runCatching {
++      context.packageManager.getPackageInfo(TERMUX_PACKAGE, 0)
++    }.isSuccess
++    if (!installed) {
++      promise.reject("TERMUX_NOT_INSTALLED", "Termux is not installed.")
++      return
++    }
++    if (context.checkSelfPermission(TERMUX_PERMISSION) != PackageManager.PERMISSION_GRANTED) {
++      promise.reject(
++        "TERMUX_PERMISSION_REQUIRED",
++        "Grant Jarvis the Termux RUN_COMMAND permission and enable allow-external-apps=true in Termux."
++      )
++      return
++    }
++
++    val requestId = JarvisTermuxBroker.register(promise)
++    try {
++      val callbackIntent = Intent(context, JarvisTermuxResultService::class.java)
++        .putExtra(JarvisTermuxResultService.EXTRA_REQUEST_ID, requestId)
++      val flags = PendingIntent.FLAG_ONE_SHOT or
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
++      val callback = PendingIntent.getService(context, requestId, callbackIntent, flags)
++      val runIntent = Intent().apply {
++        setClassName(TERMUX_PACKAGE, TERMUX_SERVICE)
++        action = TERMUX_ACTION
++        putExtra(EXTRA_PATH, executable)
++        putExtra(EXTRA_ARGUMENTS, arguments.toTypedArray())
++        putExtra(EXTRA_WORKDIR, TERMUX_HOME)
++        putExtra(EXTRA_BACKGROUND, true)
++        putExtra(EXTRA_LABEL, "Jarvis | AuthorAi")
++        putExtra(EXTRA_DESCRIPTION, description)
++        putExtra(EXTRA_PENDING_INTENT, callback)
++      }
++      checkNotNull(context.startService(runIntent)) {
++        "Termux rejected RUN_COMMAND."
++      }
++    } catch (error: Exception) {
++      JarvisTermuxBroker.reject(
++        requestId,
++        "TERMUX_START_FAILED",
++        error.message ?: "Unable to start Termux.",
++        error
++      )
++    }
++  }
++}
++
++class JarvisTermuxResultService : Service() {
++  override fun onBind(intent: Intent?): IBinder? = null
++
++  override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
++    val requestId = intent?.getIntExtra(EXTRA_REQUEST_ID, -1) ?: -1
++    if (requestId >= 0) {
++      val bundle = intent?.getBundleExtra("result")
++      if (bundle == null) {
++        JarvisTermuxBroker.complete(requestId, -1, "", "", "Termux returned no result bundle.")
++      } else {
++        val err = bundle.getInt("err", Activity.RESULT_OK)
++        JarvisTermuxBroker.complete(
++          requestId,
++          bundle.getInt("exitCode", -1),
++          bundle.getString("stdout", ""),
++          bundle.getString("stderr", ""),
++          if (err == Activity.RESULT_OK) "" else bundle.getString("errmsg", "Termux error")
++        )
++      }
++    }
++    stopSelf(startId)
++    return START_NOT_STICKY
++  }
++
++  companion object {
++    const val EXTRA_REQUEST_ID = "top.authorche.agent.termux.REQUEST_ID"
++  }
++}
+diff --git a/src/agent/talents/PythonExecEngine.ts b/src/agent/talents/PythonExecEngine.ts
+new file mode 100644
+--- /dev/null
++++ b/src/agent/talents/PythonExecEngine.ts
+@@ -0,0 +1,114 @@
++import {NativeModules, Platform} from 'react-native';
++import type {
++  TalentEngine,
++  TalentResult,
++  ToolDefinition,
++  SystemPromptContext,
++} from '../../services/talents/types';
++
++type PythonResult = {
++  exitCode: number;
++  stdout: string;
++  stderr: string;
++  error: string;
++};
++
++type TermuxStatus = {
++  installed: boolean;
++  permission: boolean;
++  ready: boolean;
++};
++
++interface JarvisTermuxNative {
++  getStatus(): Promise<TermuxStatus>;
++  runPython(code: string, argv: string[]): Promise<PythonResult>;
++}
++
++const native = NativeModules.JarvisTermuxModule as
++  | JarvisTermuxNative
++  | undefined;
++
++export class PythonExecEngine implements TalentEngine {
++  readonly name = 'python_exec';
++  readonly recommendedContextTokens = 1600;
++
++  async execute(args: Record<string, any>): Promise<TalentResult> {
++    if (Platform.OS !== 'android' || !native) {
++      return {
++        type: 'error',
++        summary: 'python_exec: Android Termux bridge is unavailable.',
++        errorMessage: 'Python execution is available only on Android.',
++      };
++    }
++    const code = typeof args.code === 'string' ? args.code : '';
++    const argv = Array.isArray(args.arguments)
++      ? args.arguments.filter((v: unknown) => typeof v === 'string').slice(0, 20)
++      : [];
++    if (!code.trim()) {
++      return {
++        type: 'error',
++        summary: 'python_exec: missing code.',
++        errorMessage: 'The code argument must be non-empty.',
++      };
++    }
++    try {
++      const status = await native.getStatus();
++      if (!status.ready) {
++        const reason = !status.installed
++          ? 'Install Termux first.'
++          : 'Grant com.termux.permission.RUN_COMMAND and enable allow-external-apps=true in Termux.';
++        return {
++          type: 'error',
++          summary: 'python_exec: ' + reason,
++          errorMessage: reason,
++        };
++      }
++      const result = await native.runPython(code, argv);
++      const output = [
++        result.stdout?.trim() ? 'stdout:\n' + result.stdout.trim() : '',
++        result.stderr?.trim() ? 'stderr:\n' + result.stderr.trim() : '',
++        result.error?.trim() ? 'error:\n' + result.error.trim() : '',
++        'exitCode: ' + result.exitCode,
++      ]
++        .filter(Boolean)
++        .join('\n\n')
++        .slice(0, 64000);
++      if (result.exitCode !== 0 || result.error) {
++        return {type: 'error', summary: output, errorMessage: output};
++      }
++      return {type: 'text', summary: output};
++    } catch (error) {
++      const message = error instanceof Error ? error.message : String(error);
++      return {type: 'error', summary: 'python_exec: ' + message, errorMessage: message};
++    }
++  }
++
++  systemPromptFragment(_ctx: SystemPromptContext): string {
++    return 'python_exec runs Python 3 locally through the user-installed Termux app. The executable is fixed to Python; it is not a general shell. Use it for calculation, text/data transforms and code generation when a normal answer is insufficient. Keep scripts bounded and print the useful result to stdout.';
++  }
++
++  toToolDefinition(): ToolDefinition {
++    return {
++      type: 'function',
++      function: {
++        name: this.name,
++        description:
++          'Run bounded Python 3 code locally through Termux. Requires Termux plus RUN_COMMAND permission. This is not an arbitrary shell tool.',
++        parameters: {
++          type: 'object',
++          properties: {
++            code: {type: 'string', description: 'Python 3 source code to execute.'},
++            arguments: {
++              type: 'array',
++              items: {type: 'string'},
++              maxItems: 20,
++              description: 'Optional sys.argv values after -c.',
++            },
++          },
++          required: ['code'],
++          additionalProperties: false,
++        },
++      },
++    };
++  }
++}
+diff --git a/src/agent/talents/WorkspaceEngine.ts b/src/agent/talents/WorkspaceEngine.ts
+new file mode 100644
+--- /dev/null
++++ b/src/agent/talents/WorkspaceEngine.ts
+@@ -0,0 +1,155 @@
++import * as RNFS from '@dr.pogodin/react-native-fs';
++import type {
++  TalentEngine,
++  TalentResult,
++  ToolDefinition,
++  SystemPromptContext,
++} from '../../services/talents/types';
++
++const ROOT = RNFS.DocumentDirectoryPath + '/jarvis-workspace';
++const MAX_TEXT_CHARS = 2000000;
++const MAX_BASE64_CHARS = 16000000;
++const MAX_READ_BYTES = 4000000;
++
++const safeRelativePath = (raw: unknown): string => {
++  if (typeof raw !== 'string') throw new Error('path must be a string');
++  const path = raw.replace(/\\/g, '/').replace(/^\/+/, '').trim();
++  const parts = path.split('/');
++  if (
++    !path ||
++    path.length > 240 ||
++    path.includes('\u0000') ||
++    parts.some(part => !part || part === '.' || part === '..')
++  ) {
++    throw new Error('Unsafe workspace path');
++  }
++  return path;
++};
++
++const filePath = (relative: string): string => ROOT + '/' + relative;
++
++const ensureParent = async (relative: string): Promise<void> => {
++  await RNFS.mkdir(ROOT);
++  const slash = relative.lastIndexOf('/');
++  if (slash > 0) await RNFS.mkdir(ROOT + '/' + relative.slice(0, slash));
++};
++
++export class WorkspaceEngine implements TalentEngine {
++  readonly name = 'workspace';
++  readonly recommendedContextTokens = 1200;
++
++  async execute(args: Record<string, any>): Promise<TalentResult> {
++    try {
++      const operation = String(args.operation ?? '');
++      if (operation === 'list') return this.list(args.path);
++      const relative = safeRelativePath(args.path);
++      if (operation === 'write_text') {
++        const content = typeof args.content === 'string' ? args.content : '';
++        if (content.length > MAX_TEXT_CHARS) throw new Error('Text file exceeds 2000000 characters');
++        await ensureParent(relative);
++        await RNFS.writeFile(filePath(relative), content, 'utf8');
++        return {
++          type: 'text',
++          summary:
++            'Created file: file://' +
++            filePath(relative) +
++            ' (' +
++            content.length +
++            ' characters)',
++        };
++      }
++      if (operation === 'write_base64') {
++        const content = typeof args.content === 'string' ? args.content : '';
++        if (!content || content.length > MAX_BASE64_CHARS) {
++          throw new Error('Base64 payload is empty or too large');
++        }
++        await ensureParent(relative);
++        await RNFS.writeFile(filePath(relative), content, 'base64');
++        const stat = await RNFS.stat(filePath(relative));
++        return {
++          type: 'text',
++          summary:
++            'Created binary file: file://' +
++            filePath(relative) +
++            ' (' +
++            Number(stat.size) +
++            ' bytes)',
++        };
++      }
++      if (operation === 'read_text') {
++        const stat = await RNFS.stat(filePath(relative));
++        if (!stat.isFile() || Number(stat.size) > MAX_READ_BYTES) {
++          throw new Error('File is not readable text or exceeds 4 MB');
++        }
++        const content = await RNFS.readFile(filePath(relative), 'utf8');
++        return {type: 'text', summary: 'File ' + relative + ':\n' + content.slice(0, MAX_TEXT_CHARS)};
++      }
++      if (operation === 'delete') {
++        if (await RNFS.exists(filePath(relative))) await RNFS.unlink(filePath(relative));
++        return {type: 'text', summary: 'Deleted workspace item: ' + relative};
++      }
++      return {
++        type: 'error',
++        summary: 'workspace: unsupported operation ' + operation,
++        errorMessage: 'Unsupported workspace operation.',
++      };
++    } catch (error) {
++      const message = error instanceof Error ? error.message : String(error);
++      return {type: 'error', summary: 'workspace: ' + message, errorMessage: message};
++    }
++  }
++
++  private async list(rawPath: unknown): Promise<TalentResult> {
++    await RNFS.mkdir(ROOT);
++    const relative =
++      typeof rawPath === 'string' && rawPath.trim() ? safeRelativePath(rawPath) : '';
++    const target = relative ? filePath(relative) : ROOT;
++    const items = await RNFS.readDir(target);
++    const summary = items
++      .slice(0, 200)
++      .map(item => {
++        const kind = item.isDirectory() ? 'dir ' : 'file';
++        const size = item.isFile() ? ' ' + Number(item.size) + ' B' : '';
++        return kind + ' ' + item.name + size;
++      })
++      .join('\n');
++    return {
++      type: 'text',
++      summary: summary || 'Workspace directory is empty: file://' + target,
++    };
++  }
++
++  systemPromptFragment(_ctx: SystemPromptContext): string {
++    return 'workspace gives you a private Jarvis file workspace. Use write_text for Markdown, JSON, CSV, HTML, SVG, source code and other text artifacts; write_base64 for bounded binary payloads; list/read_text/delete for follow-up work. Never invent a file path: use the exact path returned by the tool.';
++  }
++
++  toToolDefinition(): ToolDefinition {
++    return {
++      type: 'function',
++      function: {
++        name: this.name,
++        description:
++          'Create and manage files in the app-private Jarvis workspace. Supports text, base64 binary data, reading text, listing and deletion.',
++        parameters: {
++          type: 'object',
++          properties: {
++            operation: {
++              type: 'string',
++              enum: ['write_text', 'write_base64', 'read_text', 'list', 'delete'],
++            },
++            path: {
++              type: 'string',
++              description: 'Relative path such as reports/report.md or images/card.svg.',
++            },
++            content: {
++              type: 'string',
++              description: 'Text or base64 payload for write operations.',
++            },
++          },
++          required: ['operation'],
++          additionalProperties: false,
++        },
++      },
++    };
++  }
++}
+diff --git a/src/services/talents/index.ts b/src/services/talents/index.ts
+--- a/src/services/talents/index.ts
++++ b/src/services/talents/index.ts
+@@ -10,6 +10,8 @@ import {searchProviderStore} from '../../store/SearchProviderStore';
+ import {createSearchProvider, readWithDefaultReader} from '../search';
+ import {DeviceStatusEngine} from '../../agent/talents/DeviceStatusEngine';
+ import {DeviceActionEngine} from '../../agent/talents/DeviceActionEngine';
++import {WorkspaceEngine} from '../../agent/talents/WorkspaceEngine';
++import {PythonExecEngine} from '../../agent/talents/PythonExecEngine';
+ 
+ export {TalentRegistry, talentRegistry} from './TalentRegistry';
+ export {TalentUIRegistry, talentUIRegistry} from './TalentUIRegistry';
+@@ -21,6 +23,8 @@ export {WebSearchEngine} from './WebSearchEngine';
+ export {ReadUrlEngine} from './ReadUrlEngine';
+ export {DeviceStatusEngine} from '../../agent/talents/DeviceStatusEngine';
+ export {DeviceActionEngine} from '../../agent/talents/DeviceActionEngine';
++export {WorkspaceEngine} from '../../agent/talents/WorkspaceEngine';
++export {PythonExecEngine} from '../../agent/talents/PythonExecEngine';
+ export type {SearchAccess} from './searchAccess';
+ // Deliberately narrow: the raw allowlist writers stay module-internal so all
+ // writes happen inside services/talents (seed at run start, WebSearchEngine
+@@ -68,5 +72,7 @@ export function registerDefaultTalents(): void {
+   talentRegistry.register(new ReadUrlEngine(searchAccess));
+   talentRegistry.register(new DeviceStatusEngine());
+   talentRegistry.register(new DeviceActionEngine());
++  talentRegistry.register(new WorkspaceEngine());
++  talentRegistry.register(new PythonExecEngine());
+   registered = true;
+ }
+diff --git a/src/store/PalStore.ts b/src/store/PalStore.ts
+--- a/src/store/PalStore.ts
++++ b/src/store/PalStore.ts
+@@ -802,6 +802,8 @@ class PalStore {
+             {name: 'read_url', necessity: 'optional'},
+             {name: 'device_status', necessity: 'optional'},
+             {name: 'device_action', necessity: 'optional'},
++            {name: 'workspace', necessity: 'optional'},
++            {name: 'python_exec', necessity: 'optional'},
+           ],
+         },
+         source: 'local',
+diff --git a/src/store/onboarding/onboardingPals.ts b/src/store/onboarding/onboardingPals.ts
+--- a/src/store/onboarding/onboardingPals.ts
++++ b/src/store/onboarding/onboardingPals.ts
+@@ -128,5 +128,7 @@ const PAL_PIP: OnboardingPalDef = {
+       {name: 'read_url', necessity: 'optional'},
+       {name: 'device_status', necessity: 'optional'},
+       {name: 'device_action', necessity: 'optional'},
++      {name: 'workspace', necessity: 'optional'},
++      {name: 'python_exec', necessity: 'optional'},
+     ],
+   },
+diff --git a/src/services/talents/__tests__/morgan-review-fixes.test.ts b/src/services/talents/__tests__/morgan-review-fixes.test.ts
+--- a/src/services/talents/__tests__/morgan-review-fixes.test.ts
++++ b/src/services/talents/__tests__/morgan-review-fixes.test.ts
+@@ -32,7 +32,7 @@ describe('deriveToolSchemas strict-subset filtering', () => {
+ 
+   it('returns all schemas when talentNames is undefined', () => {
+     const schemas = deriveToolSchemas();
+-    expect(schemas).toHaveLength(7);
++    expect(schemas).toHaveLength(9);
+   });
+ 
+   it('includes the internet-search talents in the full set', () => {
+diff --git a/src/services/talents/__tests__/pact-cleanup.test.ts b/src/services/talents/__tests__/pact-cleanup.test.ts
+--- a/src/services/talents/__tests__/pact-cleanup.test.ts
++++ b/src/services/talents/__tests__/pact-cleanup.test.ts
+@@ -142,7 +142,7 @@ describe('PACT cleanup: deriveToolSchemas()', () => {
+     expect(talentRegistry.getAll()).toHaveLength(0);
+ 
+     const schemas = deriveToolSchemas();
+-    expect(schemas).toHaveLength(7);
++    expect(schemas).toHaveLength(9);
+ 
+     const names = schemas.map(s => s.function.name).sort();
+     expect(names).toEqual([
+@@ -150,7 +150,9 @@ describe('PACT cleanup: deriveToolSchemas()', () => {
+       'datetime',
+       'device_action',
+       'device_status',
++      'python_exec',
+       'read_url',
+       'render_html',
+       'web_search',
++      'workspace',
+     ]);
+@@ -177,7 +179,7 @@ describe('PACT cleanup: deriveToolSchemas()', () => {
+       tool_choice: 'auto' as const,
+       jinja: true,
+     };
+-    expect(completionSettings.tools).toHaveLength(7);
++    expect(completionSettings.tools).toHaveLength(9);
+     expect(completionSettings.tools[0].type).toBe('function');
+   });
+ });
+diff --git a/src/services/talents/__tests__/pact-vocabulary-audit.test.ts b/src/services/talents/__tests__/pact-vocabulary-audit.test.ts
+--- a/src/services/talents/__tests__/pact-vocabulary-audit.test.ts
++++ b/src/services/talents/__tests__/pact-vocabulary-audit.test.ts
+@@ -128,5 +128,5 @@ describe('PACT vocabulary audit', () => {
+     it('returns ToolDefinition array for all registered engines', () => {
+       const schemas = deriveToolSchemas();
+-      expect(schemas).toHaveLength(7);
++      expect(schemas).toHaveLength(9);
+       const names = schemas.map(s => s.function.name);
+       expect(names).toContain('render_html');
+@@ -135,4 +135,6 @@ describe('PACT vocabulary audit', () => {
+       expect(names).toContain('read_url');
+       expect(names).toContain('device_status');
+       expect(names).toContain('device_action');
++      expect(names).toContain('workspace');
++      expect(names).toContain('python_exec');
+     });
+@@ -142,5 +144,5 @@ describe('PACT vocabulary audit', () => {
+       // registerDefaultTalents internally.
+       expect(talentRegistry.has('render_html')).toBe(false);
+       const schemas = deriveToolSchemas();
+-      expect(schemas).toHaveLength(7);
++      expect(schemas).toHaveLength(9);
+       expect(talentRegistry.has('render_html')).toBe(true);
+     });
+   });

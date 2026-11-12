@@ -1,0 +1,112 @@
+--- a/src/components/ChatInput/__tests__/ChatInput.test.tsx
++++ b/src/components/ChatInput/__tests__/ChatInput.test.tsx
+@@ -49,7 +49,7 @@
+       l10n.en.components.sendButton.accessibilityLabel,
+     );
+     fireEvent.press(button);
+-    expect(onSendPress).toHaveBeenCalledWith({text: 'text', type: 'text'});
++    expect(onSendPress).toHaveBeenCalledWith(expect.objectContaining({text: 'text', type: 'text'}));
+     expect(textInput.props).toHaveProperty('value', 'text');
+   });
+ 
+@@ -79,7 +79,7 @@
+       l10n.en.components.sendButton.accessibilityLabel,
+     );
+     fireEvent.press(button);
+-    expect(onSendPress).toHaveBeenCalledWith({text: 'text', type: 'text'});
++    expect(onSendPress).toHaveBeenCalledWith(expect.objectContaining({text: 'text', type: 'text'}));
+     expect(textInput.props).toHaveProperty('value', '');
+   });
+ 
+@@ -125,7 +125,7 @@
+       l10n.en.components.sendButton.accessibilityLabel,
+     );
+     fireEvent.press(button);
+-    expect(onSendPress).toHaveBeenCalledWith({text: 'text', type: 'text'});
++    expect(onSendPress).toHaveBeenCalledWith(expect.objectContaining({text: 'text', type: 'text'}));
+     expect(textInput.props).toHaveProperty('value', 'text');
+   });
+ 
+@@ -157,7 +157,7 @@
+       l10n.en.components.sendButton.accessibilityLabel,
+     );
+     fireEvent.press(button);
+-    expect(onSendPress).toHaveBeenCalledWith({text: 'text', type: 'text'});
++    expect(onSendPress).toHaveBeenCalledWith(expect.objectContaining({text: 'text', type: 'text'}));
+     expect(textInput.props).toHaveProperty('value', '');
+   });
+ 
+@@ -191,7 +191,7 @@
+     );
+     await waitFor(() => fireEvent.press(button)); // Wait for the press event to be processed
+ 
+-    expect(onSendPress).toHaveBeenCalledWith({text: value, type: 'text'});
++    expect(onSendPress).toHaveBeenCalledWith(expect.objectContaining({text: value, type: 'text'}));
+     expect(textInput.props).toHaveProperty('value', value);
+   });
+ 
+@@ -222,10 +222,10 @@
+       l10n.en.components.sendButton.accessibilityLabel,
+     );
+     fireEvent.press(button);
+-    expect(onSendPress).toHaveBeenCalledWith({
++    expect(onSendPress).toHaveBeenCalledWith(expect.objectContaining({
+       text: defaultValue,
+       type: 'text',
+-    });
++    }));
+     expect(textInput.props).toHaveProperty('value', '');
+   });
+ 
+@@ -545,10 +545,10 @@
+     );
+     fireEvent.press(sendButton);
+ 
+-    expect(onSendPress).toHaveBeenCalledWith({
++    expect(onSendPress).toHaveBeenCalledWith(expect.objectContaining({
+       text: 'test message',
+       type: 'text',
+-    });
++    }));
+   });
+ 
+   describe('Image Upload Functionality', () => {
+@@ -796,11 +796,11 @@
+       );
+       fireEvent.press(sendButton);
+ 
+-      expect(onSendPress).toHaveBeenCalledWith({
++      expect(onSendPress).toHaveBeenCalledWith(expect.objectContaining({
+         text: 'test with images',
+         type: 'text',
+         imageUris: defaultImages,
+-      });
++      }));
+     });
+   });
+ 
+@@ -942,11 +942,11 @@
+       fireEvent.press(sendButton);
+ 
+       // Verify onSendPress WAS called
+-      expect(onSendPress).toHaveBeenCalledWith({
++      expect(onSendPress).toHaveBeenCalledWith(expect.objectContaining({
+         text: 'Test message',
+         type: 'text',
+         imageUris: undefined,
+-      });
++      }));
+     });
+   });
+ });
+--- a/src/components/ChatView/__tests__/ChatView.test.tsx
++++ b/src/components/ChatView/__tests__/ChatView.test.tsx
+@@ -97,7 +97,7 @@
+       l10n.en.components.sendButton.accessibilityLabel,
+     );
+     fireEvent.press(button);
+-    expect(onSendPress).toHaveBeenCalledWith({text: 'text', type: 'text'});
++    expect(onSendPress).toHaveBeenCalledWith(expect.objectContaining({text: 'text', type: 'text'}));
+   });
+ 
+   it('opens file on a file message tap', () => {

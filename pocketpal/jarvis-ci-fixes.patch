@@ -1,0 +1,59 @@
+diff --git a/src/store/__tests__/PalStore.test.ts b/src/store/__tests__/PalStore.test.ts
+--- a/src/store/__tests__/PalStore.test.ts
++++ b/src/store/__tests__/PalStore.test.ts
+@@ -431,6 +431,14 @@
+     beforeEach(() => {
+       (palRepository.createPal as jest.Mock).mockImplementation(
+         async (data: Partial<Pal>) => ({...mockPal, ...data}),
++      );
++      // An existing Jarvis record is upgraded with new tools before the
++      // seed marker is persisted. Mirror the repository's successful update.
++      (palRepository.updatePal as jest.Mock).mockImplementation(
++        async (id: string, updates: Partial<Pal>) => ({
++          ...palStore.pals.find(p => p.id === id),
++          ...updates,
++        }),
+       );
+       (palRepository.deletePal as jest.Mock).mockResolvedValue(true);
+     });
+diff --git a/src/voice/LiveVoicePanel.tsx b/src/voice/LiveVoicePanel.tsx
+--- a/src/voice/LiveVoicePanel.tsx
++++ b/src/voice/LiveVoicePanel.tsx
+@@ -17,7 +17,7 @@
+ 
+ const styles = StyleSheet.create({
+   panel: {paddingHorizontal: 16, paddingVertical: 6},
+-  actions: {flexDirection: 'row', alignItems: 'center', gap: 8},
++  actions: {flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8},
+ });
+ 
+ /** Explicit foreground voice session, with a separate stop/interrupt action. */
+@@ -131,12 +131,16 @@
+         });
+     }, [phase, isInferencing, lastAnswer, listen, localOnly]);
+ 
+-    const activateJarvis = async () => {
++    const activateJarvis = async (): Promise<boolean> => {
+       const jarvis = palStore.pals.find(
+         p => p.name === 'Jarvis' && p.source === 'local',
+       );
+-      if (jarvis) await chatSessionStore.setActivePal(jarvis.id);
+-      else Alert.alert('Jarvis', 'Агент ще ініціалізується. Спробуйте знову.');
++      if (jarvis) {
++        await chatSessionStore.setActivePal(jarvis.id);
++        return true;
++      }
++      Alert.alert('Jarvis', 'Агент ще ініціалізується. Спробуйте знову.');
++      return false;
+     };
+ 
+     const prepareUkrainianVoice = async () => {
+@@ -171,7 +175,7 @@
+           PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+         ));
+       if (granted !== PermissionsAndroid.RESULTS.GRANTED) return;
+-      await activateJarvis();
++      if (!(await activateJarvis())) return;
+       try {
+         await prepareUkrainianVoice();
+       } catch (error) {

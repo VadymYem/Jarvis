@@ -1,0 +1,987 @@
+diff --git a/android/app/build.gradle b/android/app/build.gradle
+index 0fd744f..136657d 100644
+--- a/android/app/build.gradle
++++ b/android/app/build.gradle
+@@ -1,4 +1,5 @@
+ apply plugin: "com.android.application"
++apply plugin: "com.chaquo.python"
+ apply plugin: "org.jetbrains.kotlin.android"
+ apply plugin: "org.jetbrains.kotlin.kapt"
+ apply plugin: "com.facebook.react"
+@@ -86,8 +87,8 @@ android {
+         applicationId "top.authorche.agent"
+         minSdkVersion rootProject.ext.minSdkVersion
+         targetSdkVersion rootProject.ext.targetSdkVersion
+-        versionCode 7
+-        versionName "0.7.0"
++        versionCode 8
++        versionName "0.8.0"
+         ndk {
+             abiFilters "arm64-v8a"
+         }
+@@ -185,6 +186,13 @@ android {
+     }
+ }
+ 
++chaquopy {
++    defaultConfig {
++        version = "3.12"
++        pip { install("pillow==11.0.0") }
++    }
++}
++
+ dependencies {
+     implementation "org.kiwix:libkiwix:2.6.0"
+     // The version of react-native is set by the React Native Gradle Plugin
+diff --git a/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt b/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
+index 6de99b4..8e75072 100644
+--- a/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
++++ b/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
+@@ -10,7 +10,9 @@ class AgentDevicePackage : ReactPackage {
+     listOf(
+       ExternalSpeechModule(reactContext),
+       LiveVoiceModule(reactContext),
+-      OfflineZimModule(reactContext)
++      OfflineZimModule(reactContext),
++      AndroidDocumentsModule(reactContext),
++      LocalPythonModule(reactContext)
+     )
+ 
+   override fun createViewManagers(
+diff --git a/android/app/src/main/java/top/authorche/agent/AndroidDocumentsModule.kt b/android/app/src/main/java/top/authorche/agent/AndroidDocumentsModule.kt
+new file mode 100644
+index 0000000..b130d5a
+--- /dev/null
++++ b/android/app/src/main/java/top/authorche/agent/AndroidDocumentsModule.kt
+@@ -0,0 +1,125 @@
++package top.authorche.agent
++
++import android.app.Activity
++import android.content.Intent
++import android.net.Uri
++import android.provider.OpenableColumns
++import com.facebook.react.bridge.ActivityEventListener
++import com.facebook.react.bridge.Arguments
++import com.facebook.react.bridge.Promise
++import com.facebook.react.bridge.ReactApplicationContext
++import com.facebook.react.bridge.ReactContextBaseJavaModule
++import com.facebook.react.bridge.ReactMethod
++import com.facebook.react.bridge.BaseActivityEventListener
++
++/** Android document picker grants access only to files the user selects. */
++class AndroidDocumentsModule(private val context: ReactApplicationContext) : ReactContextBaseJavaModule(context) {
++  private var pending: Promise? = null
++  private val listener: ActivityEventListener = object : BaseActivityEventListener() {
++    override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
++      if (requestCode != PICK) return
++      val promise = pending ?: return
++      pending = null
++      if (resultCode != Activity.RESULT_OK || data?.data == null) {
++        promise.resolve(null)
++        return
++      }
++      try {
++        val uri = data.data!!
++        val flags = data.flags and (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
++        context.contentResolver.takePersistableUriPermission(uri, flags)
++        promise.resolve(readDocument(uri))
++      } catch (e: Exception) { promise.reject("DOCUMENT_READ_FAILED", e.message, e) }
++    }
++  }
++
++  init { context.addActivityEventListener(listener) }
++  override fun getName() = "AndroidDocumentsModule"
++
++  @ReactMethod fun openText(promise: Promise) {
++    if (pending != null) { promise.reject("PICKER_BUSY", "File picker already open"); return }
++    val activity = context.currentActivity ?: run { promise.reject("NO_ACTIVITY", "Android activity unavailable"); return }
++    pending = promise
++    try {
++      val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
++        addCategory(Intent.CATEGORY_OPENABLE)
++        type = "text/*"
++        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
++      }
++      activity.startActivityForResult(intent, PICK)
++    } catch (e: Exception) { pending = null; promise.reject("PICKER_FAILED", e.message, e) }
++  }
++
++  @ReactMethod fun readText(uriText: String, promise: Promise) {
++    try { promise.resolve(readDocument(authorizedUri(uriText))) }
++    catch (e: Exception) { promise.reject("DOCUMENT_READ_FAILED", e.message, e) }
++  }
++
++  @ReactMethod fun writeText(uriText: String, content: String, promise: Promise) {
++    try {
++      require(content.length <= 2_000_000) { "Text exceeds 2 MB" }
++      val uri = authorizedUri(uriText, write = true)
++      context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(content.toByteArray(Charsets.UTF_8)) }
++        ?: error("Cannot open document for writing")
++      promise.resolve("Saved selected Android document")
++    } catch (e: Exception) { promise.reject("DOCUMENT_WRITE_FAILED", e.message, e) }
++  }
++
++  @ReactMethod fun listGrants(promise: Promise) {
++    val grants = Arguments.createArray()
++    context.contentResolver.persistedUriPermissions.forEach { permission ->
++      grants.pushString(permission.uri.toString())
++    }
++    promise.resolve(grants)
++  }
++
++  @ReactMethod fun revokeGrants(promise: Promise) {
++    try {
++      context.contentResolver.persistedUriPermissions.forEach { permission ->
++        context.contentResolver.releasePersistableUriPermission(
++          permission.uri,
++          (if (permission.isReadPermission) Intent.FLAG_GRANT_READ_URI_PERMISSION else 0) or
++            (if (permission.isWritePermission) Intent.FLAG_GRANT_WRITE_URI_PERMISSION else 0)
++        )
++      }
++      promise.resolve("Доступ до вибраних файлів відкликано")
++    } catch (e: Exception) { promise.reject("DOCUMENT_REVOKE_FAILED", e.message, e) }
++  }
++
++  private fun authorizedUri(uriText: String, write: Boolean = false): Uri {
++    val uri = Uri.parse(uriText)
++    val permission = context.contentResolver.persistedUriPermissions.firstOrNull {
++      it.uri == uri && (if (write) it.isWritePermission else it.isReadPermission)
++    } ?: error("Select this document in Android's file picker first")
++    return permission.uri
++  }
++
++  private fun readDocument(uri: Uri): com.facebook.react.bridge.WritableMap {
++    val name = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
++      if (it.moveToFirst()) it.getString(0) else "document"
++    } ?: "document"
++    val bytes = context.contentResolver.openInputStream(uri)?.use { stream ->
++      val buffer = ByteArray(2_000_001)
++      var count = 0
++      while (count < buffer.size) {
++        val read = stream.read(buffer, count, buffer.size - count)
++        if (read < 0) break
++        count += read
++      }
++      require(count <= 2_000_000) { "Document exceeds 2 MB" }
++      buffer.copyOf(count)
++    } ?: error("Cannot open document")
++    return Arguments.createMap().apply {
++      putString("uri", uri.toString())
++      putString("name", name)
++      putString("text", bytes.toString(Charsets.UTF_8))
++    }
++  }
++  override fun invalidate() {
++    context.removeActivityEventListener(listener)
++    pending?.reject("DOCUMENT_CLOSED", "Document picker closed")
++    pending = null
++    super.invalidate()
++  }
++  companion object { private const val PICK = 9123 }
++}
+diff --git a/android/app/src/main/java/top/authorche/agent/LocalPythonModule.kt b/android/app/src/main/java/top/authorche/agent/LocalPythonModule.kt
+new file mode 100644
+index 0000000..c7ed65f
+--- /dev/null
++++ b/android/app/src/main/java/top/authorche/agent/LocalPythonModule.kt
+@@ -0,0 +1,44 @@
++package top.authorche.agent
++
++import com.chaquo.python.Python
++import com.chaquo.python.android.AndroidPlatform
++import com.facebook.react.bridge.Arguments
++import com.facebook.react.bridge.Promise
++import com.facebook.react.bridge.ReactApplicationContext
++import com.facebook.react.bridge.ReactContextBaseJavaModule
++import com.facebook.react.bridge.ReactMethod
++import java.io.File
++import java.util.concurrent.Executors
++
++/** Lazy, serialized Python runtime sharing the app-private Jarvis workspace. */
++class LocalPythonModule(private val context: ReactApplicationContext) : ReactContextBaseJavaModule(context) {
++  private val worker = Executors.newSingleThreadExecutor()
++  override fun getName() = "LocalPythonModule"
++
++  @ReactMethod fun runPython(code: String, promise: Promise) {
++    if (code.isBlank() || code.length > 20_000) {
++      promise.reject("PYTHON_INPUT", "Python code must contain 1–20,000 characters")
++      return
++    }
++    worker.execute {
++      try {
++        if (!Python.isStarted()) Python.start(AndroidPlatform(context))
++        val workspace = File(context.filesDir, "jarvis-workspace")
++        check(workspace.isDirectory || workspace.mkdirs()) { "Cannot create workspace" }
++        val result = Python.getInstance().getModule("jarvis_runner")
++          .callAttr("run", code, workspace.canonicalPath).toString()
++        promise.resolve(Arguments.createMap().apply {
++          putString("result", result)
++          putString("workspace", workspace.absolutePath)
++        })
++      } catch (error: Exception) {
++        promise.reject("PYTHON_RUN", error.message, error)
++      }
++    }
++  }
++
++  override fun invalidate() {
++    worker.shutdown()
++    super.invalidate()
++  }
++}
+diff --git a/android/app/src/main/java/top/authorche/agent/OfflineZimModule.kt b/android/app/src/main/java/top/authorche/agent/OfflineZimModule.kt
+index 91dbc78..6cbd23d 100644
+--- a/android/app/src/main/java/top/authorche/agent/OfflineZimModule.kt
++++ b/android/app/src/main/java/top/authorche/agent/OfflineZimModule.kt
+@@ -39,7 +39,8 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
+           context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+           val info = inspect(uri)
+           val old = preferences.getString("uri", null)
+-          preferences.edit().putString("uri", uri.toString()).putString("name", name).apply()
++          preferences.edit().putString("uri", uri.toString()).putString("name", name)
++            .putInt("articles", info.getInt("articles")).apply()
+           if (old != null && old != uri.toString()) release(Uri.parse(old))
+           promise.resolve(info)
+         } catch (error: Exception) { promise.reject("ZIM_IMPORT", error.message, error) }
+@@ -69,6 +70,7 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
+     promise.resolve(Arguments.createMap().apply {
+       putBoolean("ready", uri != null && context.contentResolver.persistedUriPermissions.any { it.uri.toString() == uri && it.isReadPermission })
+       putString("name", preferences.getString("name", null))
++      putInt("articles", preferences.getInt("articles", 0))
+     })
+   }
+ 
+@@ -89,10 +91,13 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
+         val rows = Arguments.createArray()
+         withArchive(uri) { archive ->
+           val searcher = Searcher(archive)
+-          val request = Query(query.trim().take(180))
+-          val search = searcher.search(request)
+-          val iterator = search.getResults(0, limit.toInt().coerceIn(1, 5))
+           try {
++            val request = Query(query.trim().take(180))
++            try {
++              val search = searcher.search(request)
++              try {
++                val iterator = search.getResults(0, limit.toInt().coerceIn(1, 5))
++                try {
+             var count = 0
+             while (iterator.hasNext() && count < limit.toInt().coerceIn(1, 5)) {
+               val title = iterator.title ?: break
+@@ -101,8 +106,11 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
+               val excerpt = try {
+                 val item = archive.getEntryByPath(path).getItem(true)
+                 if (item.size in 1L..250_000L && item.mimetype.startsWith("text/html")) {
+-                  Html.fromHtml(item.data.data.toString(Charsets.UTF_8), Html.FROM_HTML_MODE_COMPACT)
+-                    .toString().replace(Regex("\\s+"), " ").trim().take(1500)
++                  val blob = item.data
++                  try {
++                    Html.fromHtml(blob.data.toString(Charsets.UTF_8), Html.FROM_HTML_MODE_COMPACT)
++                      .toString().replace(Regex("\\s+"), " ").trim().take(1500)
++                  } finally { blob.dispose() }
+                 } else snippet
+               } catch (_: Exception) { snippet }
+               rows.pushMap(Arguments.createMap().apply {
+@@ -114,12 +122,10 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
+               iterator.next()
+               count++
+             }
+-          } finally {
+-            iterator.dispose()
+-            search.dispose()
+-            request.dispose()
+-            searcher.dispose()
+-          }
++                } finally { iterator.dispose() }
++              } finally { search.dispose() }
++            } finally { request.dispose() }
++          } finally { searcher.dispose() }
+         }
+         promise.resolve(rows)
+       } catch (error: Exception) { promise.reject("ZIM_SEARCH", error.message, error) }
+@@ -156,6 +162,9 @@ class OfflineZimModule(private val context: ReactApplicationContext) : ReactCont
+   }
+ 
+   override fun invalidate() {
++    context.removeActivityEventListener(listener)
++    pending?.reject("ZIM_CLOSED", "Archive picker closed")
++    pending = null
+     executor.shutdown()
+     super.invalidate()
+   }
+diff --git a/android/app/src/main/python/jarvis_runner.py b/android/app/src/main/python/jarvis_runner.py
+new file mode 100644
+index 0000000..3d2f889
+--- /dev/null
++++ b/android/app/src/main/python/jarvis_runner.py
+@@ -0,0 +1,57 @@
++"""Run a short local script and report newly created workspace files."""
++
++import contextlib
++import io
++import json
++import os
++import sys
++import time
++import traceback
++from pathlib import Path
++
++
++class _LimitedOutput(io.StringIO):
++    def write(self, value):
++        if self.tell() + len(value) > 16000:
++            raise ValueError("Python output exceeded 16,000 characters")
++        return super().write(value)
++
++
++def run(code, workspace):
++    root = Path(workspace).resolve()
++    root.mkdir(parents=True, exist_ok=True)
++    before = {str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()}
++    stdout, stderr = _LimitedOutput(), _LimitedOutput()
++    old_cwd, old_argv, old_trace = os.getcwd(), sys.argv, sys.gettrace()
++    deadline = time.monotonic() + 15
++
++    def trace(frame, event, arg):
++        if time.monotonic() > deadline:
++            raise TimeoutError("Python exceeded 15 seconds")
++        return trace
++
++    error = None
++    try:
++        os.chdir(root)
++        sys.argv = ["jarvis_script.py"]
++        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
++            sys.settrace(trace)
++            try:
++                exec(compile(code, "<jarvis_script>", "exec"), {"__name__": "__main__"})
++            finally:
++                sys.settrace(old_trace)
++    except BaseException as exc:
++        error = "".join(traceback.format_exception_only(type(exc), exc)).strip()[:1000]
++    finally:
++        sys.settrace(old_trace)
++        sys.argv = old_argv
++        os.chdir(old_cwd)
++
++    created = []
++    for path in root.rglob("*"):
++        if path.is_file() and str(path.relative_to(root)) not in before:
++            created.append(str(path.relative_to(root)))
++            if len(created) >= 40:
++                break
++    return json.dumps({"stdout": stdout.getvalue(), "stderr": stderr.getvalue(),
++                       "error": error, "created": created}, ensure_ascii=False)
+diff --git a/android/build.gradle b/android/build.gradle
+index 9ce566e..75d84a6 100644
+--- a/android/build.gradle
++++ b/android/build.gradle
+@@ -15,6 +15,7 @@ buildscript {
+         classpath("com.android.tools.build:gradle")
+         classpath("com.facebook.react:react-native-gradle-plugin")
+         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin")
++        classpath("com.chaquo.python:gradle:17.0.0")
+ 
+     }
+ }
+diff --git a/src/agent/native/AndroidDocuments.ts b/src/agent/native/AndroidDocuments.ts
+new file mode 100644
+index 0000000..dda5683
+--- /dev/null
++++ b/src/agent/native/AndroidDocuments.ts
+@@ -0,0 +1,22 @@
++import {NativeModules, Platform} from 'react-native';
++
++export type AndroidDocument = {uri: string; name: string; text: string};
++type Module = {
++  openText(): Promise<AndroidDocument | null>;
++  readText(uri: string): Promise<AndroidDocument>;
++  writeText(uri: string, text: string): Promise<string>;
++  listGrants(): Promise<string[]>;
++  revokeGrants(): Promise<string>;
++};
++const module = NativeModules.AndroidDocumentsModule as Module | undefined;
++const requireModule = (): Module => {
++  if (Platform.OS !== 'android' || !module) throw new Error('Android document picker unavailable');
++  return module;
++};
++export const androidDocuments: Module = {
++  openText: () => requireModule().openText(),
++  readText: uri => requireModule().readText(uri),
++  writeText: (uri, text) => requireModule().writeText(uri, text),
++  listGrants: () => requireModule().listGrants(),
++  revokeGrants: () => requireModule().revokeGrants(),
++};
+diff --git a/src/agent/talents/AndroidDocumentEngine.ts b/src/agent/talents/AndroidDocumentEngine.ts
+new file mode 100644
+index 0000000..37fa29b
+--- /dev/null
++++ b/src/agent/talents/AndroidDocumentEngine.ts
+@@ -0,0 +1,53 @@
++import {Alert} from 'react-native';
++import type {TalentEngine, TalentResult, ToolDefinition} from '../../services/talents/types';
++import {androidDocuments} from '../native/AndroidDocuments';
++
++const confirm = (title: string, detail: string): Promise<boolean> => new Promise(resolve => {
++  Alert.alert(title, detail, [
++    {text: 'Скасувати', style: 'cancel', onPress: () => resolve(false)},
++    {text: 'Дозволити', onPress: () => resolve(true)},
++  ], {cancelable: false});
++});
++
++export class AndroidDocumentEngine implements TalentEngine {
++  readonly name = 'android_document';
++  async execute(args: Record<string, any>): Promise<TalentResult> {
++    try {
++      const operation = String(args.operation ?? '');
++      if (operation === 'pick_read') {
++        const document = await androidDocuments.openText();
++        if (!document) return {type: 'text', summary: 'User cancelled file selection.'};
++        return {type: 'text', summary: `${document.name}\nURI: ${document.uri}\n${document.text.slice(0, 16000)}`};
++      }
++      const uri = String(args.uri ?? '');
++      if (!uri.startsWith('content://')) throw new Error('Select a document first. A content URI is required.');
++      if (operation === 'read') {
++        const document = await androidDocuments.readText(uri);
++        return {type: 'text', summary: `${document.name}\n${document.text.slice(0, 16000)}`};
++      }
++      if (operation === 'write') {
++        const content = String(args.content ?? '');
++        if (content.length > 2000000) throw new Error('Text exceeds 2 MB');
++        if (!(await confirm('Змінити файл Android?', `Jarvis запише ${content.length} символів у вибраний файл. Поточний вміст буде замінено.`))) {
++          return {type: 'text', summary: 'User declined file write.'};
++        }
++        return {type: 'text', summary: await androidDocuments.writeText(uri, content)};
++      }
++      throw new Error('Unsupported document operation');
++    } catch (error) {
++      const message = error instanceof Error ? error.message : String(error);
++      return {type: 'error', summary: message, errorMessage: message};
++    }
++  }
++  toToolDefinition(): ToolDefinition {
++    return {type: 'function', function: {
++      name: this.name,
++      description: 'Open Android system file picker and read text files chosen by the user; write only to a previously chosen document after confirmation.',
++      parameters: {type: 'object', additionalProperties: false, required: ['operation'], properties: {
++        operation: {type: 'string', enum: ['pick_read', 'read', 'write']},
++        uri: {type: 'string', description: 'content:// URI from the picker'},
++        content: {type: 'string'},
++      }},
++    }};
++  }
++}
+diff --git a/src/agent/talents/PythonExecEngine.ts b/src/agent/talents/PythonExecEngine.ts
+new file mode 100644
+index 0000000..f302999
+--- /dev/null
++++ b/src/agent/talents/PythonExecEngine.ts
+@@ -0,0 +1,87 @@
++import {Alert, NativeModules, Platform} from 'react-native';
++import type {
++  TalentEngine,
++  TalentResult,
++  ToolDefinition,
++  SystemPromptContext,
++} from '../../services/talents/types';
++
++type PythonResult = {stdout: string; stderr: string; error: string | null; created: string[]};
++interface LocalPythonNative {
++  runPython(code: string): Promise<{result: string; workspace: string}>;
++}
++
++const native = NativeModules.LocalPythonModule as LocalPythonNative | undefined;
++const confirm = (length: number): Promise<boolean> => new Promise(resolve => {
++  Alert.alert('Запустити Python?', `Jarvis запустить ${length} символів коду у локальному середовищі. Код може змінювати приватні файли додатка.`, [
++    {text: 'Скасувати', style: 'cancel', onPress: () => resolve(false)},
++    {text: 'Запустити', onPress: () => resolve(true)},
++  ], {cancelable: false});
++});
++
++export class PythonExecEngine implements TalentEngine {
++  readonly name = 'python_exec';
++  readonly recommendedContextTokens = 1600;
++
++  async execute(args: Record<string, any>): Promise<TalentResult> {
++    if (Platform.OS !== 'android' || !native) {
++      return {
++        type: 'error',
++        summary: 'python_exec: embedded Python is unavailable.',
++        errorMessage: 'Python execution is available only on Android.',
++      };
++    }
++    const code = typeof args.code === 'string' ? args.code : '';
++    if (!code.trim() || code.length > 20000) {
++      return {
++        type: 'error',
++        summary: 'python_exec: missing code.',
++        errorMessage: 'The code argument must contain 1–20,000 characters.',
++      };
++    }
++    try {
++      if (!(await confirm(code.length))) return {type: 'text', summary: 'User declined Python execution.'};
++      const run = await native.runPython(code);
++      const result = JSON.parse(run.result) as PythonResult;
++      const output = [
++        result.stdout?.trim() ? 'stdout:\n' + result.stdout.trim() : '',
++        result.stderr?.trim() ? 'stderr:\n' + result.stderr.trim() : '',
++        result.error?.trim() ? 'error:\n' + result.error.trim() : '',
++        result.created?.length ? 'Created in workspace:\n' + result.created.map(path => `file://${run.workspace}/${path}`).join('\n') : '',
++      ]
++        .filter(Boolean)
++        .join('\n\n')
++        .slice(0, 64000);
++      if (result.error) {
++        return {type: 'error', summary: output, errorMessage: output};
++      }
++      return {type: 'text', summary: output || 'Python completed without output.'};
++    } catch (error) {
++      const message = error instanceof Error ? error.message : String(error);
++      return {type: 'error', summary: 'python_exec: ' + message, errorMessage: message};
++    }
++  }
++
++  systemPromptFragment(_ctx: SystemPromptContext): string {
++    return 'python_exec runs Python 3.12 locally after user approval. Current directory is the private Jarvis workspace; save reports or images there using pathlib or Pillow, and print a short result. Keep scripts bounded.';
++  }
++
++  toToolDefinition(): ToolDefinition {
++    return {
++      type: 'function',
++      function: {
++        name: this.name,
++        description:
++          'Run Python 3.12 locally with user approval. Supports standard library and Pillow for files, documents, data and drawn images in the private workspace.',
++        parameters: {
++          type: 'object',
++          properties: {
++            code: {type: 'string', description: 'Python 3 source code to execute.'},
++          },
++          required: ['code'],
++          additionalProperties: false,
++        },
++      },
++    };
++  }
++}
+diff --git a/src/agent/talents/WorkspaceEngine.ts b/src/agent/talents/WorkspaceEngine.ts
+new file mode 100644
+index 0000000..2dd024a
+--- /dev/null
++++ b/src/agent/talents/WorkspaceEngine.ts
+@@ -0,0 +1,155 @@
++import * as RNFS from '@dr.pogodin/react-native-fs';
++import type {
++  TalentEngine,
++  TalentResult,
++  ToolDefinition,
++  SystemPromptContext,
++} from '../../services/talents/types';
++
++const ROOT = RNFS.DocumentDirectoryPath + '/jarvis-workspace';
++const MAX_TEXT_CHARS = 2000000;
++const MAX_BASE64_CHARS = 16000000;
++const MAX_READ_BYTES = 4000000;
++
++const safeRelativePath = (raw: unknown): string => {
++  if (typeof raw !== 'string') throw new Error('path must be a string');
++  const path = raw.replace(/\\/g, '/').replace(/^\/+/, '').trim();
++  const parts = path.split('/');
++  if (
++    !path ||
++    path.length > 240 ||
++    path.includes('\u0000') ||
++    parts.some(part => !part || part === '.' || part === '..')
++  ) {
++    throw new Error('Unsafe workspace path');
++  }
++  return path;
++};
++
++const filePath = (relative: string): string => ROOT + '/' + relative;
++
++const ensureParent = async (relative: string): Promise<void> => {
++  await RNFS.mkdir(ROOT);
++  const slash = relative.lastIndexOf('/');
++  if (slash > 0) await RNFS.mkdir(ROOT + '/' + relative.slice(0, slash));
++};
++
++export class WorkspaceEngine implements TalentEngine {
++  readonly name = 'workspace';
++  readonly recommendedContextTokens = 1200;
++
++  async execute(args: Record<string, any>): Promise<TalentResult> {
++    try {
++      const operation = String(args.operation ?? '');
++      if (operation === 'list') return this.list(args.path);
++      const relative = safeRelativePath(args.path);
++      if (operation === 'write_text') {
++        const content = typeof args.content === 'string' ? args.content : '';
++        if (content.length > MAX_TEXT_CHARS) throw new Error('Text file exceeds 2000000 characters');
++        await ensureParent(relative);
++        await RNFS.writeFile(filePath(relative), content, 'utf8');
++        return {
++          type: 'text',
++          summary:
++            'Created file: file://' +
++            filePath(relative) +
++            ' (' +
++            content.length +
++            ' characters)',
++        };
++      }
++      if (operation === 'write_base64') {
++        const content = typeof args.content === 'string' ? args.content : '';
++        if (!content || content.length > MAX_BASE64_CHARS) {
++          throw new Error('Base64 payload is empty or too large');
++        }
++        await ensureParent(relative);
++        await RNFS.writeFile(filePath(relative), content, 'base64');
++        const stat = await RNFS.stat(filePath(relative));
++        return {
++          type: 'text',
++          summary:
++            'Created binary file: file://' +
++            filePath(relative) +
++            ' (' +
++            Number(stat.size) +
++            ' bytes)',
++        };
++      }
++      if (operation === 'read_text') {
++        const stat = await RNFS.stat(filePath(relative));
++        if (!stat.isFile() || Number(stat.size) > MAX_READ_BYTES) {
++          throw new Error('File is not readable text or exceeds 4 MB');
++        }
++        const content = await RNFS.readFile(filePath(relative), 'utf8');
++        return {type: 'text', summary: 'File ' + relative + ':\n' + content.slice(0, MAX_TEXT_CHARS)};
++      }
++      if (operation === 'delete') {
++        if (await RNFS.exists(filePath(relative))) await RNFS.unlink(filePath(relative));
++        return {type: 'text', summary: 'Deleted workspace item: ' + relative};
++      }
++      return {
++        type: 'error',
++        summary: 'workspace: unsupported operation ' + operation,
++        errorMessage: 'Unsupported workspace operation.',
++      };
++    } catch (error) {
++      const message = error instanceof Error ? error.message : String(error);
++      return {type: 'error', summary: 'workspace: ' + message, errorMessage: message};
++    }
++  }
++
++  private async list(rawPath: unknown): Promise<TalentResult> {
++    await RNFS.mkdir(ROOT);
++    const relative =
++      typeof rawPath === 'string' && rawPath.trim() ? safeRelativePath(rawPath) : '';
++    const target = relative ? filePath(relative) : ROOT;
++    const items = await RNFS.readDir(target);
++    const summary = items
++      .slice(0, 200)
++      .map(item => {
++        const kind = item.isDirectory() ? 'dir ' : 'file';
++        const size = item.isFile() ? ' ' + Number(item.size) + ' B' : '';
++        return kind + ' ' + item.name + size;
++      })
++      .join('\n');
++    return {
++      type: 'text',
++      summary: summary || 'Workspace directory is empty: file://' + target,
++    };
++  }
++
++  systemPromptFragment(_ctx: SystemPromptContext): string {
++    return 'workspace gives you a private Jarvis file workspace. Use write_text for Markdown, JSON, CSV, HTML, SVG, source code and other text artifacts; write_base64 for bounded binary payloads; list/read_text/delete for follow-up work. Never invent a file path: use the exact path returned by the tool.';
++  }
++
++  toToolDefinition(): ToolDefinition {
++    return {
++      type: 'function',
++      function: {
++        name: this.name,
++        description:
++          'Create and manage files in the app-private Jarvis workspace. Supports text, base64 binary data, reading text, listing and deletion.',
++        parameters: {
++          type: 'object',
++          properties: {
++            operation: {
++              type: 'string',
++              enum: ['write_text', 'write_base64', 'read_text', 'list', 'delete'],
++            },
++            path: {
++              type: 'string',
++              description: 'Relative path such as reports/report.md or images/card.svg.',
++            },
++            content: {
++              type: 'string',
++              description: 'Text or base64 payload for write operations.',
++            },
++          },
++          required: ['operation'],
++          additionalProperties: false,
++        },
++      },
++    };
++  }
++}
+diff --git a/src/hooks/useChatSession.ts b/src/hooks/useChatSession.ts
+index 47ba3a8..c816e05 100644
+--- a/src/hooks/useChatSession.ts
++++ b/src/hooks/useChatSession.ts
+@@ -604,14 +604,14 @@ export const useChatSession = (
+       l10n,
+       currentMessages,
+       knowledgeEvidence,
+-      disableTools: pal?.name === 'Jarvis',
++      disableTools: false,
+     });
+ 
+     currentMessageInfo.current = messageInfo;
+ 
+     // Allowed talent names for this Pal. The runner rejects any
+     // tool call whose function.name isn't in this list.
+-    const palTalents = pal?.name === 'Jarvis' ? [] : (pal?.pact?.talents ?? []).map(t => t.name);
++    const palTalents = (pal?.pact?.talents ?? []).map(t => t.name);
+ 
+     abortRef.current = new AbortController();
+     const completionStartTime = Date.now();
+diff --git a/src/knowledge/retrieve.ts b/src/knowledge/retrieve.ts
+index 3a1df07..96c959f 100644
+--- a/src/knowledge/retrieve.ts
++++ b/src/knowledge/retrieve.ts
+@@ -20,10 +20,18 @@ export const retrieveKnowledge = async (text: string): Promise<string> => {
+   if (!query || query.length < 3 || query.length > 180) return '';
+   if (wantsWebSearch(text)) {
+     const id = searchProviderStore.activeProviderId;
+-    const hits = await createSearchProvider(id, () => searchProviderStore.getKey(id)).search(query, {maxResults: 5});
+-    if (!hits.length) throw new Error('Пошук не повернув результатів.');
+-    return 'Результати веб-пошуку, отримані зараз. Використовуй лише наведені факти й URL; якщо відповіді немає, скажи про це.\n' +
+-      hits.slice(0, 5).map(hit => `${hit.title}\n${hit.url}\n${hit.snippet.slice(0, 350)}`).join('\n\n');
++    try {
++      const hits = await createSearchProvider(id, () => searchProviderStore.getKey(id)).search(query, {maxResults: 5});
++      if (!hits.length) throw new Error('Пошук не повернув результатів.');
++      return 'Результати веб-пошуку, отримані зараз. Використовуй лише наведені факти й URL; якщо відповіді немає, скажи про це.\n' +
++        hits.slice(0, 5).map(hit => `${hit.title}\n${hit.url}\n${hit.snippet.slice(0, 350)}`).join('\n\n');
++    } catch (error) {
++      const status = await offlineZim.status();
++      if (!status.ready) throw error;
++      const articles = await offlineZim.search(query, 3);
++      if (!articles.length) throw error;
++      return 'Веб-пошук зараз недоступний (' + String(error).slice(0, 160) + '). Наведено лише офлайн-дані з ZIM, які можуть застаріти; не стверджуй, що вони актуальні.\n' + formatOfflineEvidence(articles);
++    }
+   }
+   const status = await offlineZim.status();
+   if (!status.ready) return '';
+diff --git a/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx b/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx
+index e0e2747..22b5008 100644
+--- a/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx
++++ b/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx
+@@ -24,7 +24,7 @@ export const OfflineKnowledgeCard: React.FC = () => {
+     <Card.Title title="Офлайн-бібліотека" />
+     <Card.Content style={{gap: 8, paddingBottom: 16}}>
+       <Text variant="bodyMedium">{archive.ready ? `Підключено: ${archive.name}` : 'Підключіть архів Wikipedia у форматі ZIM. Після цього Jarvis шукатиме в ньому автоматично без інтернету.'}</Text>
+-      <Text variant="bodySmall">Архів зберігається у вибраному вами місці. Для української мови можна взяти Wikipedia mini (менший файл) або nopic (більше тексту). Розмір залежить від архіву.</Text>
++      <Text variant="bodySmall">Для всієї Вікіпедії оберіть повний архів Wikipedia ZIM (наприклад, ukwiki або enwiki з позначкою nopic чи maxi). Версія mini містить лише частину статей. Завантажте архів із каталогу Kiwix, залиште його у пам’яті телефону й оберіть файл нижче; повний архів може займати десятки гігабайтів.</Text>
+       <Button mode="contained-tonal" onPress={choose}>Обрати файл ZIM</Button>
+       <Button mode="text" onPress={() => Linking.openURL('https://library.kiwix.org/#lang=uk')}>Відкрити каталог Kiwix</Button>
+       {archive.ready && <Button mode="text" onPress={forget}>Відключити архів</Button>}
+diff --git a/src/services/talents/__tests__/morgan-review-fixes.test.ts b/src/services/talents/__tests__/morgan-review-fixes.test.ts
+index b9643cb..f510cd8 100644
+--- a/src/services/talents/__tests__/morgan-review-fixes.test.ts
++++ b/src/services/talents/__tests__/morgan-review-fixes.test.ts
+@@ -32,7 +32,7 @@ describe('deriveToolSchemas strict-subset filtering', () => {
+ 
+   it('returns all schemas when talentNames is undefined', () => {
+     const schemas = deriveToolSchemas();
+-    expect(schemas).toHaveLength(5);
++    expect(schemas).toHaveLength(8);
+   });
+ 
+   it('includes the internet-search talents in the full set', () => {
+diff --git a/src/services/talents/__tests__/pact-cleanup.test.ts b/src/services/talents/__tests__/pact-cleanup.test.ts
+index e352981..0742662 100644
+--- a/src/services/talents/__tests__/pact-cleanup.test.ts
++++ b/src/services/talents/__tests__/pact-cleanup.test.ts
+@@ -142,10 +142,10 @@ describe('PACT cleanup: deriveToolSchemas()', () => {
+     expect(talentRegistry.getAll()).toHaveLength(0);
+ 
+     const schemas = deriveToolSchemas();
+-    expect(schemas).toHaveLength(5);
++    expect(schemas).toHaveLength(8);
+ 
+     const names = schemas.map(s => s.function.name).sort();
+-    expect(names).toEqual(['calculate', 'datetime', 'read_url', 'render_html', 'web_search']);
++    expect(names).toEqual(['android_document', 'calculate', 'datetime', 'python_exec', 'read_url', 'render_html', 'web_search', 'workspace']);
+   });
+ 
+   it('each schema has the OpenAI function-calling shape', () => {
+@@ -169,7 +169,7 @@ describe('PACT cleanup: deriveToolSchemas()', () => {
+       tool_choice: 'auto' as const,
+       jinja: true,
+     };
+-    expect(completionSettings.tools).toHaveLength(5);
++    expect(completionSettings.tools).toHaveLength(8);
+     expect(completionSettings.tools[0].type).toBe('function');
+   });
+ });
+diff --git a/src/services/talents/__tests__/pact-vocabulary-audit.test.ts b/src/services/talents/__tests__/pact-vocabulary-audit.test.ts
+index 53cb106..23977e5 100644
+--- a/src/services/talents/__tests__/pact-vocabulary-audit.test.ts
++++ b/src/services/talents/__tests__/pact-vocabulary-audit.test.ts
+@@ -126,7 +126,7 @@ describe('PACT vocabulary audit', () => {
+ 
+     it('returns ToolDefinition array for all registered engines', () => {
+       const schemas = deriveToolSchemas();
+-      expect(schemas).toHaveLength(5);
++      expect(schemas).toHaveLength(8);
+       const names = schemas.map(s => s.function.name);
+       expect(names).toContain('render_html');
+       expect(names).toContain('calculate');
+@@ -140,7 +140,7 @@ describe('PACT vocabulary audit', () => {
+       // registerDefaultTalents internally.
+       expect(talentRegistry.has('render_html')).toBe(false);
+       const schemas = deriveToolSchemas();
+-      expect(schemas).toHaveLength(5);
++      expect(schemas).toHaveLength(8);
+       expect(talentRegistry.has('render_html')).toBe(true);
+     });
+   });
+diff --git a/src/services/talents/index.ts b/src/services/talents/index.ts
+index d812b5b..9c067d0 100644
+--- a/src/services/talents/index.ts
++++ b/src/services/talents/index.ts
+@@ -3,6 +3,9 @@ import {CalculateEngine} from './CalculateEngine';
+ import {DatetimeEngine} from './DatetimeEngine';
+ import {WebSearchEngine} from './WebSearchEngine';
+ import {ReadUrlEngine} from './ReadUrlEngine';
++import {WorkspaceEngine} from '../../agent/talents/WorkspaceEngine';
++import {PythonExecEngine} from '../../agent/talents/PythonExecEngine';
++import {AndroidDocumentEngine} from '../../agent/talents/AndroidDocumentEngine';
+ import {talentRegistry} from './TalentRegistry';
+ import type {SearchAccess} from './searchAccess';
+ import type {ToolDefinition, SystemPromptContext} from './types';
+@@ -17,6 +20,9 @@ export {CalculateEngine} from './CalculateEngine';
+ export {DatetimeEngine} from './DatetimeEngine';
+ export {WebSearchEngine} from './WebSearchEngine';
+ export {ReadUrlEngine} from './ReadUrlEngine';
++export {WorkspaceEngine} from '../../agent/talents/WorkspaceEngine';
++export {PythonExecEngine} from '../../agent/talents/PythonExecEngine';
++export {AndroidDocumentEngine} from '../../agent/talents/AndroidDocumentEngine';
+ export type {SearchAccess} from './searchAccess';
+ // Deliberately narrow: the raw allowlist writers stay module-internal so all
+ // writes happen inside services/talents (seed at run start, WebSearchEngine
+@@ -62,6 +68,9 @@ export function registerDefaultTalents(): void {
+   const searchAccess = createSearchAccess();
+   talentRegistry.register(new WebSearchEngine(searchAccess));
+   talentRegistry.register(new ReadUrlEngine(searchAccess));
++  talentRegistry.register(new WorkspaceEngine());
++  talentRegistry.register(new PythonExecEngine());
++  talentRegistry.register(new AndroidDocumentEngine());
+   registered = true;
+ }
+ 
+diff --git a/src/store/PalStore.ts b/src/store/PalStore.ts
+index 43de19c..b7d68bf 100644
+--- a/src/store/PalStore.ts
++++ b/src/store/PalStore.ts
+@@ -55,6 +55,8 @@ import {downloadPalThumbnail, deletePalThumbnail} from '../utils/imageUtils';
+ const LOOKIE_SEEDED_KEY = 'PalStore.builtin.Lookie.seeded';
+ const JARVIS_SEEDED_KEY = 'PalStore.builtin.Jarvis.seeded';
+ const JARVIS_TOOLS_V07_KEY = 'PalStore.builtin.Jarvis.tools.v07';
++const JARVIS_TOOLS_V08_KEY = 'PalStore.builtin.Jarvis.tools.v08';
++const JARVIS_FILE_TALENTS = ['workspace', 'python_exec', 'android_document'].map(name => ({name, necessity: 'optional' as const}));
+ const JARVIS_ID_KEY = 'PalStore.builtin.Jarvis.id';
+ 
+ class PalStore {
+@@ -795,16 +797,17 @@ class PalStore {
+ 
+   private async initializeJarvisPal(force = false): Promise<void> {
+     try {
+-      if (!force && (await AsyncStorage.getItem(JARVIS_SEEDED_KEY)) === 'true') {
++      if (!force && (await AsyncStorage.getItem(JARVIS_SEEDED_KEY)) === 'true' &&
++          (await AsyncStorage.getItem(JARVIS_TOOLS_V08_KEY)) === 'true') {
+         return;
+       }
+ 
+       const existing = await this.findJarvisPal();
+       if (existing) {
+         await AsyncStorage.setItem(JARVIS_ID_KEY, existing.id);
+-        if (await AsyncStorage.getItem(JARVIS_TOOLS_V07_KEY) !== 'true') {
+-          await this.updatePal(existing.id, {pact: {talents: []}});
+-          await AsyncStorage.setItem(JARVIS_TOOLS_V07_KEY, 'true');
++        if (await AsyncStorage.getItem(JARVIS_TOOLS_V08_KEY) !== 'true') {
++          await this.updatePal(existing.id, {pact: {talents: JARVIS_FILE_TALENTS}});
++          await AsyncStorage.setItem(JARVIS_TOOLS_V08_KEY, 'true');
+         }
+         await AsyncStorage.setItem(JARVIS_SEEDED_KEY, 'true');
+         return;
+@@ -824,7 +827,7 @@ class PalStore {
+         parameterSchema: [],
+         capabilities: {},
+         color: ['#063B32', '#63E6BE'],
+-        pact: {talents: []},
++        pact: {talents: JARVIS_FILE_TALENTS},
+         source: 'local',
+       };
+ 
+@@ -832,6 +835,7 @@ class PalStore {
+       await AsyncStorage.setItem(JARVIS_ID_KEY, created.id);
+       await AsyncStorage.setItem(JARVIS_SEEDED_KEY, 'true');
+       await AsyncStorage.setItem(JARVIS_TOOLS_V07_KEY, 'true');
++      await AsyncStorage.setItem(JARVIS_TOOLS_V08_KEY, 'true');
+     } catch (error) {
+       console.error('Error initializing Jarvis agent:', error);
+     }
+diff --git a/src/store/__tests__/PalStore.test.ts b/src/store/__tests__/PalStore.test.ts
+index 0ce0151..cbc0014 100644
+--- a/src/store/__tests__/PalStore.test.ts
++++ b/src/store/__tests__/PalStore.test.ts
+@@ -386,6 +386,9 @@ describe('PalStore', () => {
+       runInAction(() => {
+         palStore.pals = [existingJarvis];
+       });
++      (palRepository.updatePal as jest.Mock).mockImplementation(
++        async (_id: string, updates: Partial<Pal>) => ({...existingJarvis, ...updates}),
++      );
+ 
+       await callInitializeJarvisPal();
+ 
+@@ -398,6 +401,7 @@ describe('PalStore', () => {
+       // observed objects in Proxies, so Object.is equality is brittle;
+       // value equality verifies the field wasn't cleared or rewritten).
+       expect(jarvis?.defaultModel).toEqual(boundModel);
++      expect(jarvis?.pact?.talents?.map(t => t.name)).toEqual(['workspace', 'python_exec', 'android_document']);
+       expect(palRepository.createPal).not.toHaveBeenCalled();
+     });
+ 
+diff --git a/src/store/onboarding/onboardingPals.ts b/src/store/onboarding/onboardingPals.ts
+index b52c9bc..b2b3d8b 100644
+--- a/src/store/onboarding/onboardingPals.ts
++++ b/src/store/onboarding/onboardingPals.ts
+@@ -118,7 +118,11 @@ const PAL_PIP: OnboardingPalDef = {
+   systemPrompt:
+     "You are Jarvis, AuthorChe's private pocket AI. Reply in the user's language, with Ukrainian as the default. Use the supplied offline or web evidence accurately, cite article titles or source URLs, and never claim to control Android. Say if an archive may be outdated.",
+   color: ['#063B32', '#63E6BE'],
+-  pact: {talents: []},
++  pact: {talents: [
++    {name: 'workspace', necessity: 'optional'},
++    {name: 'python_exec', necessity: 'optional'},
++    {name: 'android_document', necessity: 'optional'},
++  ]},
+   models: [
+     palEntry({
+       tier: 'quick',
+diff --git a/src/voice/LiveVoicePanel.tsx b/src/voice/LiveVoicePanel.tsx
+index 4933db6..e35e447 100644
+--- a/src/voice/LiveVoicePanel.tsx
++++ b/src/voice/LiveVoicePanel.tsx
+@@ -68,7 +68,7 @@ export const LiveVoicePanel = observer(
+           const result = await liveVoice.listen(language, offline);
+           if (session.current !== id) return;
+           if (!result?.text.trim()) {
+-            setTimeout(() => {
++            timeout.current = setTimeout(() => {
+               if (session.current === id) listen(id, offline);
+             }, 250);
+             return;

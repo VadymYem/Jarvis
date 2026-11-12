@@ -1,0 +1,258 @@
+diff --git a/src/services/search/index.ts b/src/services/search/index.ts
+--- a/src/services/search/index.ts
++++ b/src/services/search/index.ts
+@@ -6,6 +6,7 @@ import {ExaProvider} from './providers/exa';
+ import {ParallelProvider} from './providers/parallel';
+ import {WikipediaProvider} from './providers/wikipedia';
+ import {SearxngProvider} from './providers/searxng';
++import {DeviceWebProvider} from './providers/deviceWeb';
+ 
+ export type {
+   SearchProvider,
+@@ -41,6 +42,8 @@ export const createSearchProvider = (
+       return new WikipediaProvider();
+     case 'searxng':
+       return new SearxngProvider(getKey);
++    case 'device_web':
++      return new DeviceWebProvider();
+   }
+ };
+ 
+diff --git a/src/services/search/providers/deviceWeb.ts b/src/services/search/providers/deviceWeb.ts
+new file mode 100644
+--- /dev/null
++++ b/src/services/search/providers/deviceWeb.ts
+@@ -0,0 +1,86 @@
++import type {SearchProvider, SearchHit, SearchOptions} from '../types';
++import {fetchText} from './http';
++
++const stripMarkup = (value: string): string =>
++  value
++    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
++    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
++    .replace(/<[^>]*>/g, ' ')
++    .replace(/&amp;/g, '&')
++    .replace(/&quot;/g, '"')
++    .replace(/&#39;|&apos;/g, "'")
++    .replace(/&lt;/g, '<')
++    .replace(/&gt;/g, '>')
++    .replace(/&#x2F;/gi, '/')
++    .replace(/&#(\d+);/g, (_match, code) =>
++      String.fromCharCode(Number(code)),
++    )
++    .replace(/\s+/g, ' ')
++    .trim();
++
++const normalizeHref = (rawHref: string): string | null => {
++  const href = stripMarkup(rawHref).replace(/&amp;/g, '&');
++  try {
++    const candidate = href.startsWith('//') ? 'https:' + href : href;
++    const url = new URL(candidate);
++    if (
++      url.hostname.endsWith('duckduckgo.com') &&
++      url.pathname.startsWith('/l/')
++    ) {
++      const target = url.searchParams.get('uddg');
++      if (target && /^https?:\/\//i.test(target)) return target;
++    }
++    return /^https?:\/\//i.test(url.toString()) ? url.toString() : null;
++  } catch {
++    return null;
++  }
++};
++
++/**
++ * Keyless general web search.
++ *
++ * Search indexing is still remote: the phone sends an HTTPS query to the
++ * DuckDuckGo HTML endpoint. Jarvis performs HTML parsing, result budgeting,
++ * caching and downstream page reading locally. No API key or proxy is used.
++ */
++export class DeviceWebProvider implements SearchProvider {
++  readonly id = 'device_web';
++
++  async search(query: string, opts: SearchOptions): Promise<SearchHit[]> {
++    const endpoint =
++      'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query);
++    const html = await fetchText(endpoint, {
++      method: 'GET',
++      headers: {
++        Accept: 'text/html,application/xhtml+xml',
++        'Accept-Language': 'uk,en;q=0.8,de;q=0.6',
++      },
++    });
++
++    const hits: SearchHit[] = [];
++    const anchor =
++      /<a[^>]+class=["'][^"']*result__a[^"']*["'][^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
++    let match: RegExpExecArray | null;
++    while ((match = anchor.exec(html)) && hits.length < Math.min(8, Math.max(1, opts.maxResults))) {
++      const url = normalizeHref(match[1]);
++      const title = stripMarkup(match[2]);
++      if (!url || !title) continue;
++      const window = html.slice(anchor.lastIndex, anchor.lastIndex + 2800);
++      const snippetMatch =
++        /class=["'][^"']*result__snippet[^"']*["'][^>]*>([\s\S]*?)<\/(?:a|div)>/i.exec(
++          window,
++        );
++      hits.push({
++        title,
++        url,
++        snippet: snippetMatch ? stripMarkup(snippetMatch[1]).slice(0, 600) : '',
++      });
++    }
++    if (!hits.length) {
++      throw new Error(
++        'Device Web returned no parseable results. The public HTML endpoint may be throttled or changed.',
++      );
++    }
++    return hits;
++  }
++}
+diff --git a/src/services/search/providers/__tests__/keyless.test.ts b/src/services/search/providers/__tests__/keyless.test.ts
+--- a/src/services/search/providers/__tests__/keyless.test.ts
++++ b/src/services/search/providers/__tests__/keyless.test.ts
+@@ -1,5 +1,6 @@
+ import {WikipediaProvider} from '../wikipedia';
+ import {SearxngProvider} from '../searxng';
++import {DeviceWebProvider} from '../deviceWeb';
+ 
+ const json = (body: unknown) => ({
+   ok: true,
+@@ -55,4 +56,25 @@ describe('keyless search adapters', () => {
+       'https://search.example.org/search?q=hello&format=json',
+     );
+   });
++
++  it('parses keyless Device Web HTML locally', async () => {
++    global.fetch = jest.fn().mockResolvedValue({
++      ok: true,
++      status: 200,
++      headers: {get: () => null},
++      text: async () =>
++        '<div class="result"><a class="result__a" href="https://example.org/page">Example result</a><a class="result__snippet">Useful summary</a></div>',
++    });
++    const hits = await new DeviceWebProvider().search('hello', {
++      maxResults: 3,
++    });
++    expect(hits[0]).toEqual({
++      title: 'Example result',
++      url: 'https://example.org/page',
++      snippet: 'Useful summary',
++    });
++    expect((global.fetch as jest.Mock).mock.calls[0][0]).toContain(
++      'html.duckduckgo.com/html/?q=hello',
++    );
++  });
+ });
+diff --git a/src/services/search/__tests__/index.test.ts b/src/services/search/__tests__/index.test.ts
+--- a/src/services/search/__tests__/index.test.ts
++++ b/src/services/search/__tests__/index.test.ts
+@@ -9,6 +9,7 @@ describe('createSearchProvider', () => {
+       'parallel',
+       'wikipedia',
+       'searxng',
++      'device_web',
+     ];
+     for (const id of ids) {
+       expect(createSearchProvider(id, () => 'k').id).toBe(id);
+diff --git a/src/services/search/types.ts b/src/services/search/types.ts
+--- a/src/services/search/types.ts
++++ b/src/services/search/types.ts
+@@ -6,6 +6,7 @@ export type SearchProviderId =
+   | 'parallel'
+   | 'wikipedia'
+-  | 'searxng';
++  | 'searxng'
++  | 'device_web';
+ 
+ export interface SearchHit {
+   title: string;
+diff --git a/src/store/SearchProviderStore.ts b/src/store/SearchProviderStore.ts
+--- a/src/store/SearchProviderStore.ts
++++ b/src/store/SearchProviderStore.ts
+@@ -27,9 +27,10 @@ export const SEARCH_PROVIDERS: SearchProviderMeta[] = [
+   {id: 'parallel', label: 'Parallel', selectable: false},
+   {id: 'wikipedia', label: 'Wikipedia · без ключа', selectable: true},
+   {id: 'searxng', label: 'SearXNG · власний сервер', selectable: true},
++  {id: 'device_web', label: 'Device Web · без ключа', selectable: true},
+ ];
+ 
+-const DEFAULT_PROVIDER: SearchProviderId = 'wikipedia';
++const DEFAULT_PROVIDER: SearchProviderId = 'device_web';
+ const DEFAULT_RESULT_COUNT = 5;
+ const MIN_RESULT_COUNT = 1;
+ const MAX_RESULT_COUNT = 8;
+@@ -105,6 +106,7 @@ class SearchProviderStore {
+   get isProviderConfigured(): boolean {
+     return (
+       this.activeProviderId === 'wikipedia' ||
++      this.activeProviderId === 'device_web' ||
+       this.hasKey(this.activeProviderId)
+     );
+   }
+diff --git a/src/store/__tests__/SearchProviderStore.test.ts b/src/store/__tests__/SearchProviderStore.test.ts
+--- a/src/store/__tests__/SearchProviderStore.test.ts
++++ b/src/store/__tests__/SearchProviderStore.test.ts
+@@ -27,9 +27,9 @@ describe('SearchProviderStore', () => {
+   };
+ 
+   describe('initial state', () => {
+-    it('defaults to keyless Wikipedia, result count 5, no consent', async () => {
++    it('defaults to keyless Device Web, result count 5, no consent', async () => {
+       const store = await newStore();
+-      expect(store.activeProviderId).toBe('wikipedia');
++      expect(store.activeProviderId).toBe('device_web');
+       expect(store.resultCount).toBe(5);
+       expect(store.hasConsentedToSearch).toBe(false);
+     });
+@@ -146,5 +146,5 @@ describe('SearchProviderStore', () => {
+       const store = await newStore();
+       store.activeProviderId = 'parallel'; // gated; only reachable via stale storage
+       store.normalizeHydratedPrefs();
+-      expect(store.activeProviderId).toBe('wikipedia');
++      expect(store.activeProviderId).toBe('device_web');
+     });
+@@ -225,6 +225,14 @@ describe('SearchProviderStore', () => {
+     expect(store.canSearch).toBe(false);
+   });
+ 
++  it('allows keyless Device Web only after explicit consent', async () => {
++    const store = await newStore();
++    store.setActiveProvider('device_web');
++    expect(store.canSearch).toBe(false);
++    store.setConsent(true);
++    expect(store.canSearch).toBe(true);
++  });
++
+   describe('cache invalidation on auth-boundary changes', () => {
+     it('resets the search cache on key/consent/provider changes', async () => {
+       const reset = jest.spyOn(budget, 'resetSearchCache');
+diff --git a/src/screens/SettingsScreen/SettingsScreen.tsx b/src/screens/SettingsScreen/SettingsScreen.tsx
+--- a/src/screens/SettingsScreen/SettingsScreen.tsx
++++ b/src/screens/SettingsScreen/SettingsScreen.tsx
+@@ -1271,6 +1271,14 @@ export const SettingsScreen: React.FC = observer(() => {
+                     надсилаються Вікімедіа.
+                   </Text>
+                 )}
++                {activeSearchProviderId === 'device_web' && (
++                  <Text variant="labelSmall" style={styles.textDescription}>
++                    Без API-ключа. HTTPS-запит іде прямо з телефона до
++                    DuckDuckGo HTML, а розбір, кеш і обмеження результатів
++                    виконуються локально. Індекс залишається зовнішнім і може
++                    обмежувати частоту запитів.
++                  </Text>
++                )}
+                 {activeSearchProviderId === 'searxng' && (
+                   <Text variant="labelSmall" style={styles.textDescription}>
+                     Вкажіть HTTPS-адресу SearXNG з увімкненим JSON API. Сервер
+@@ -1278,7 +1285,8 @@ export const SettingsScreen: React.FC = observer(() => {
+                     результати локально.
+                   </Text>
+                 )}
+-                {activeSearchProviderId !== 'wikipedia' && (
++                {activeSearchProviderId !== 'wikipedia' &&
++                  activeSearchProviderId !== 'device_web' && (
+                   <>
+                     <Divider style={styles.divider} />
+                     <View style={styles.switchContainer}>

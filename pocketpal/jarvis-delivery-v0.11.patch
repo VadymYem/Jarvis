@@ -1,0 +1,1190 @@
+diff --git a/android/app/build.gradle b/android/app/build.gradle
+index a650c14..2eb662d 100644
+--- a/android/app/build.gradle
++++ b/android/app/build.gradle
+@@ -87,8 +87,8 @@ android {
+         applicationId "top.authorche.agent"
+         minSdkVersion rootProject.ext.minSdkVersion
+         targetSdkVersion rootProject.ext.targetSdkVersion
+-        versionCode 10
+-        versionName "0.10.0"
++        versionCode 11
++        versionName "0.11.0"
+         ndk {
+             abiFilters "arm64-v8a"
+         }
+diff --git a/android/app/src/main/AndroidManifest.xml b/android/app/src/main/AndroidManifest.xml
+index 24266bc..e06d3b5 100644
+--- a/android/app/src/main/AndroidManifest.xml
++++ b/android/app/src/main/AndroidManifest.xml
+@@ -20,6 +20,8 @@
+ 
+     <!-- Permissions -->
+     <uses-permission android:name="android.permission.INTERNET" />
++    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
++    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+     <uses-permission android:name="android.permission.CAMERA" />
+     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+@@ -46,6 +48,17 @@
+       android:networkSecurityConfig="@xml/network_security_config"
+       android:theme="@style/AppTheme"
+       android:supportsRtl="true">
++      <service android:name="top.authorche.agent.JarvisTaskService"
++        android:exported="false" android:foregroundServiceType="dataSync" />
++      <provider
++        android:name="androidx.core.content.FileProvider"
++        android:authorities="${applicationId}.artifacts"
++        android:exported="false"
++        android:grantUriPermissions="true">
++        <meta-data
++          android:name="android.support.FILE_PROVIDER_PATHS"
++          android:resource="@xml/jarvis_artifact_paths" />
++      </provider>
+       <activity
+         android:name=".MainActivity"
+         android:label="@string/app_name"
+diff --git a/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt b/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
+index 267850b..bb81148 100644
+--- a/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
++++ b/android/app/src/main/java/top/authorche/agent/AgentDevicePackage.kt
+@@ -12,7 +12,10 @@ class AgentDevicePackage : ReactPackage {
+       LiveVoiceModule(reactContext),
+       ManagedOfflineZimModule(reactContext),
+       ManagedDocumentsModule(reactContext),
+-      LocalPythonModule(reactContext)
++      LocalPythonModule(reactContext),
++      ArtifactExportModule(reactContext),
++      BackgroundWebSearchModule(reactContext),
++      JarvisTaskModule(reactContext)
+     )
+ 
+   override fun createViewManagers(
+diff --git a/android/app/src/main/java/top/authorche/agent/ArtifactExportModule.kt b/android/app/src/main/java/top/authorche/agent/ArtifactExportModule.kt
+new file mode 100644
+index 0000000..68a258a
+--- /dev/null
++++ b/android/app/src/main/java/top/authorche/agent/ArtifactExportModule.kt
+@@ -0,0 +1,100 @@
++package top.authorche.agent
++
++import android.app.Activity
++import android.content.Intent
++import android.net.Uri
++import androidx.core.content.FileProvider
++import com.facebook.react.bridge.BaseActivityEventListener
++import com.facebook.react.bridge.Promise
++import com.facebook.react.bridge.ReactApplicationContext
++import com.facebook.react.bridge.ReactContextBaseJavaModule
++import com.facebook.react.bridge.ReactMethod
++import java.io.File
++import java.util.concurrent.Executors
++
++/** Only exports files that the app created inside its private workspace. */
++class ArtifactExportModule(private val context: ReactApplicationContext) :
++  ReactContextBaseJavaModule(context) {
++  private val worker = Executors.newSingleThreadExecutor()
++  private var pendingSave: Pair<File, Promise>? = null
++  private val listener = object : BaseActivityEventListener() {
++    override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
++      if (requestCode != SAVE_REQUEST) return
++      val request = pendingSave ?: return
++      pendingSave = null
++      val target = data?.data
++      if (resultCode != Activity.RESULT_OK || target == null) {
++        request.second.resolve(false)
++        return
++      }
++      worker.execute {
++        try {
++          context.contentResolver.openOutputStream(target, "w")?.use { output ->
++            request.first.inputStream().use { it.copyTo(output, 1024 * 1024) }
++          } ?: error("Unable to open selected destination")
++          request.second.resolve(true)
++        } catch (error: Exception) {
++          request.second.reject("ARTIFACT_SAVE", error.message, error)
++        }
++      }
++    }
++  }
++
++  init { context.addActivityEventListener(listener) }
++  override fun getName() = "ArtifactExportModule"
++
++  private fun checkedFile(uriText: String): File {
++    val uri = Uri.parse(uriText)
++    require(uri.scheme == "file") { "Only local Jarvis artifacts can be exported" }
++    val root = File(context.filesDir, "jarvis-workspace").canonicalFile
++    val file = File(uri.path ?: "").canonicalFile
++    require(file.path.startsWith(root.path + File.separator) && file.isFile) {
++      "Artifact no longer exists in the Jarvis workspace"
++    }
++    return file
++  }
++
++  @ReactMethod fun share(uri: String, mime: String, promise: Promise) {
++    try {
++      val file = checkedFile(uri)
++      val activity = context.currentActivity ?: error("Android activity unavailable")
++      val contentUri = FileProvider.getUriForFile(context, context.packageName + ".artifacts", file)
++      val intent = Intent(Intent.ACTION_SEND).apply {
++        type = mime.ifBlank { "application/octet-stream" }
++        putExtra(Intent.EXTRA_STREAM, contentUri)
++        clipData = android.content.ClipData.newUri(context.contentResolver, file.name, contentUri)
++        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
++      }
++      activity.startActivity(Intent.createChooser(intent, "Поділитися файлом"))
++      promise.resolve(true)
++    } catch (error: Exception) { promise.reject("ARTIFACT_SHARE", error.message, error) }
++  }
++
++  @ReactMethod fun save(uri: String, mime: String, promise: Promise) {
++    if (pendingSave != null) { promise.reject("ARTIFACT_BUSY", "File picker already open"); return }
++    try {
++      val file = checkedFile(uri)
++      val activity = context.currentActivity ?: error("Android activity unavailable")
++      pendingSave = file to promise
++      activity.startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
++        addCategory(Intent.CATEGORY_OPENABLE)
++        type = mime.ifBlank { "application/octet-stream" }
++        putExtra(Intent.EXTRA_TITLE, file.name)
++        addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
++      }, SAVE_REQUEST)
++    } catch (error: Exception) {
++      pendingSave = null
++      promise.reject("ARTIFACT_SAVE", error.message, error)
++    }
++  }
++
++  override fun invalidate() {
++    context.removeActivityEventListener(listener)
++    pendingSave?.second?.reject("ARTIFACT_CLOSED", "File picker closed")
++    pendingSave = null
++    worker.shutdown()
++    super.invalidate()
++  }
++
++  companion object { private const val SAVE_REQUEST = 9147 }
++}
+diff --git a/android/app/src/main/java/top/authorche/agent/BackgroundWebSearchModule.kt b/android/app/src/main/java/top/authorche/agent/BackgroundWebSearchModule.kt
+new file mode 100644
+index 0000000..8ed83ab
+--- /dev/null
++++ b/android/app/src/main/java/top/authorche/agent/BackgroundWebSearchModule.kt
+@@ -0,0 +1,101 @@
++package top.authorche.agent
++
++import android.os.Handler
++import android.os.Looper
++import android.webkit.WebView
++import android.webkit.WebViewClient
++import com.facebook.react.bridge.Arguments
++import com.facebook.react.bridge.Promise
++import com.facebook.react.bridge.ReactApplicationContext
++import com.facebook.react.bridge.ReactContextBaseJavaModule
++import com.facebook.react.bridge.ReactMethod
++import org.json.JSONArray
++import org.json.JSONTokener
++
++/** A private WebView fallback for search pages that reject React Native fetch. */
++class BackgroundWebSearchModule(private val context: ReactApplicationContext) :
++  ReactContextBaseJavaModule(context) {
++  private val main = Handler(Looper.getMainLooper())
++  private var active: WebView? = null
++  private var pending: Promise? = null
++
++  override fun getName() = "BackgroundWebSearchModule"
++
++  @ReactMethod fun search(query: String, promise: Promise) {
++    if (query.isBlank() || query.length > 180) {
++      promise.reject("SEARCH_QUERY", "Search query must contain 1–180 characters")
++      return
++    }
++    main.post {
++      if (active != null) { promise.reject("SEARCH_BUSY", "Search already running"); return@post }
++      pending = promise
++      val view = WebView(context)
++      active = view
++      view.settings.javaScriptEnabled = true
++      view.settings.domStorageEnabled = false
++      view.settings.allowFileAccess = false
++      view.settings.allowContentAccess = false
++      view.settings.setSupportMultipleWindows(false)
++      view.webViewClient = object : WebViewClient() {
++        override fun onPageFinished(webView: WebView, url: String) {
++          if (webView !== active) return
++          val js = """(function(){
++            const links = Array.from(document.querySelectorAll('a'));
++            return JSON.stringify(links.map(a => {
++              const raw = a.href || '';
++              const direct = /[?&]uddg=([^&]+)/.exec(raw);
++              const url = direct ? decodeURIComponent(direct[1]) : raw;
++              const title = (a.innerText || a.textContent || '').trim();
++              const context = (a.closest('article, .result, .b_algo, div.MjjYud') || a.parentElement);
++              const snippet = (context?.innerText || '').trim().slice(0, 500);
++              return {title, url, snippet};
++            }).filter(row => row.title.length > 8
++              && (row.url.startsWith('https://') || row.url.startsWith('http://'))
++              && !['google.', 'bing.', 'duckduckgo.'].some(host =>
++                new URL(row.url).hostname.includes(host)))
++              .slice(0, 8));
++          })()""".trimIndent()
++          webView.evaluateJavascript(js) { response ->
++            if (webView !== active) return@evaluateJavascript
++            try {
++              val decoded = JSONTokener(response).nextValue().toString()
++              val rows = JSONArray(decoded)
++              val result = Arguments.createArray()
++              for (index in 0 until rows.length()) {
++                val hit = rows.getJSONObject(index)
++                result.pushMap(Arguments.createMap().apply {
++                  putString("title", hit.optString("title"))
++                  putString("url", hit.optString("url"))
++                  putString("snippet", hit.optString("snippet"))
++                })
++              }
++              pending?.resolve(result)
++            } catch (error: Exception) {
++              pending?.reject("SEARCH_PARSE", error.message, error)
++            } finally { close() }
++          }
++        }
++      }
++      main.postDelayed({
++        if (view === active) {
++          pending?.reject("SEARCH_TIMEOUT", "Browser search timed out")
++          close()
++        }
++      }, 18000)
++      view.loadUrl("https://www.google.com/search?hl=uk&num=8&q=" +
++        java.net.URLEncoder.encode(query, "UTF-8"))
++    }
++  }
++
++  private fun close() {
++    active?.stopLoading()
++    active?.destroy()
++    active = null
++    pending = null
++  }
++
++  override fun invalidate() {
++    main.post { pending?.reject("SEARCH_CLOSED", "Search closed"); close() }
++    super.invalidate()
++  }
++}
+diff --git a/android/app/src/main/java/top/authorche/agent/JarvisTaskModule.kt b/android/app/src/main/java/top/authorche/agent/JarvisTaskModule.kt
+new file mode 100644
+index 0000000..32c9683
+--- /dev/null
++++ b/android/app/src/main/java/top/authorche/agent/JarvisTaskModule.kt
+@@ -0,0 +1,25 @@
++package top.authorche.agent
++
++import android.content.Intent
++import androidx.core.content.ContextCompat
++import com.facebook.react.bridge.Promise
++import com.facebook.react.bridge.ReactApplicationContext
++import com.facebook.react.bridge.ReactContextBaseJavaModule
++import com.facebook.react.bridge.ReactMethod
++
++class JarvisTaskModule(private val context: ReactApplicationContext) :
++  ReactContextBaseJavaModule(context) {
++  override fun getName() = "JarvisTaskModule"
++
++  @ReactMethod fun start(promise: Promise) {
++    try {
++      ContextCompat.startForegroundService(context, Intent(context, JarvisTaskService::class.java))
++      promise.resolve(true)
++    } catch (error: Exception) { promise.reject("TASK_START", error.message, error) }
++  }
++
++  @ReactMethod fun stop(promise: Promise) {
++    context.stopService(Intent(context, JarvisTaskService::class.java))
++    promise.resolve(true)
++  }
++}
+diff --git a/android/app/src/main/java/top/authorche/agent/JarvisTaskService.kt b/android/app/src/main/java/top/authorche/agent/JarvisTaskService.kt
+new file mode 100644
+index 0000000..5fe0d30
+--- /dev/null
++++ b/android/app/src/main/java/top/authorche/agent/JarvisTaskService.kt
+@@ -0,0 +1,34 @@
++package top.authorche.agent
++
++import android.app.Notification
++import android.app.NotificationChannel
++import android.app.NotificationManager
++import android.app.Service
++import android.content.Intent
++import android.os.Build
++import android.os.IBinder
++import androidx.core.app.NotificationCompat
++
++/** Holds the running React Native agent process in foreground while a task runs. */
++class JarvisTaskService : Service() {
++  override fun onBind(intent: Intent?): IBinder? = null
++
++  override fun onCreate() {
++    super.onCreate()
++    val notifications = getSystemService(NotificationManager::class.java)
++    notifications.createNotificationChannel(NotificationChannel(
++      "jarvis_tasks", "Завдання Jarvis", NotificationManager.IMPORTANCE_LOW
++    ))
++  }
++
++  override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
++    val notification: Notification = NotificationCompat.Builder(this, "jarvis_tasks")
++      .setSmallIcon(applicationInfo.icon)
++      .setContentTitle("Jarvis працює над завданням")
++      .setContentText("Відкрийте застосунок, щоб переглянути результат")
++      .setOngoing(true)
++      .build()
++    startForeground(14721, notification)
++    return START_NOT_STICKY
++  }
++}
+diff --git a/android/app/src/main/java/top/authorche/agent/LocalPythonModule.kt b/android/app/src/main/java/top/authorche/agent/LocalPythonModule.kt
+index c7ed65f..8fa7dde 100644
+--- a/android/app/src/main/java/top/authorche/agent/LocalPythonModule.kt
++++ b/android/app/src/main/java/top/authorche/agent/LocalPythonModule.kt
+@@ -16,8 +16,8 @@ class LocalPythonModule(private val context: ReactApplicationContext) : ReactCon
+   override fun getName() = "LocalPythonModule"
+ 
+   @ReactMethod fun runPython(code: String, promise: Promise) {
+-    if (code.isBlank() || code.length > 20_000) {
+-      promise.reject("PYTHON_INPUT", "Python code must contain 1–20,000 characters")
++    if (code.isBlank() || code.length > 30_000) {
++      promise.reject("PYTHON_INPUT", "Python code must contain 1–30,000 characters")
+       return
+     }
+     worker.execute {
+diff --git a/android/app/src/main/python/jarvis_artifacts.py b/android/app/src/main/python/jarvis_artifacts.py
+index addab60..1649d10 100644
+--- a/android/app/src/main/python/jarvis_artifacts.py
++++ b/android/app/src/main/python/jarvis_artifacts.py
+@@ -22,6 +22,7 @@ def _font(size, bold=False):
+     candidates = [
+         "/system/fonts/NotoSans-Bold.ttf" if bold else "/system/fonts/NotoSans-Regular.ttf",
+         "/system/fonts/Roboto-Bold.ttf" if bold else "/system/fonts/Roboto-Regular.ttf",
++        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+     ]
+     for candidate in candidates:
+         try:
+@@ -48,28 +49,56 @@ def _wrap(draw, text, font, width):
+ 
+ 
+ def create_card(path, title, body, width=1080, height=1080):
+-    from PIL import Image, ImageDraw
++    from PIL import Image, ImageDraw, ImageFilter
+     target = _target(path)
+-    image = Image.new("RGB", (int(width), int(height)), "white")
++    width, height = int(width), int(height)
++    if not (320 <= width <= 4096 and 320 <= height <= 4096):
++        raise ValueError("Card size must be between 320 and 4096 pixels")
++    image = Image.new("RGB", (width, height))
+     draw = ImageDraw.Draw(image)
+-    title_font = _font(max(30, int(width) // 19), True)
+-    body_font = _font(max(22, int(width) // 31), False)
+-    margin = max(48, int(width) // 14)
+-    y = margin
+-    for line in _wrap(draw, title, title_font, width - 2 * margin):
+-        draw.text((margin, y), line, font=title_font, fill="black")
+-        y += int(title_font.size * 1.25)
+-    y += int(body_font.size * 0.8)
++    for y in range(height):
++        mix = y / max(1, height - 1)
++        color = (int(14 + 31 * mix), int(22 + 16 * mix), int(51 + 65 * mix))
++        draw.line((0, y, width, y), fill=color)
++    accent = (120, 224, 215)
++    decorations = Image.new("RGBA", (width, height), (0, 0, 0, 0))
++    decor = ImageDraw.Draw(decorations)
++    decor.ellipse((width * .64, -height * .24, width * 1.3, height * .42), fill=(105, 96, 255, 90))
++    decor.ellipse((-width * .29, height * .66, width * .31, height * 1.29), fill=(55, 218, 209, 63))
++    image = Image.alpha_composite(image.convert("RGBA"), decorations.filter(ImageFilter.GaussianBlur(width // 35)))
++    draw = ImageDraw.Draw(image)
++    margin = max(32, width // 14)
++    panel = (margin, margin, width - margin, height - margin)
++    radius = max(22, width // 30)
++    draw.rounded_rectangle((panel[0] + 12, panel[1] + 18, panel[2] + 12, panel[3] + 18),
++                           radius=radius, fill=(0, 0, 0, 35))
++    draw.rounded_rectangle(panel, radius=radius, fill=(247, 250, 255, 242),
++                           outline=(210, 222, 235, 255), width=max(1, width // 400))
++    inner = margin + max(32, width // 16)
++    available = width - 2 * inner
++    draw.rounded_rectangle((inner, inner + 12, inner + width // 10, inner + 22),
++                           radius=5, fill=accent)
++    title_font = _font(max(34, width // 17), True)
++    body_font = _font(max(22, width // 29))
++    y = inner + max(70, width // 11)
++    for line in _wrap(draw, title, title_font, available):
++        if y + title_font.size > height * .57:
++            break
++        draw.text((inner, y), line, font=title_font, fill=(25, 38, 65))
++        y += int(title_font.size * 1.2)
++    y += max(20, width // 30)
++    draw.line((inner, y, width - inner, y), fill=(210, 224, 237), width=2)
++    y += max(22, width // 26)
+     for paragraph in str(body).splitlines():
+-        for line in _wrap(draw, paragraph, body_font, width - 2 * margin):
+-            if y + int(body_font.size * 1.4) > height - margin:
++        for line in _wrap(draw, paragraph, body_font, available):
++            if y + int(body_font.size * 1.5) > height - inner:
+                 break
+-            draw.text((margin, y), line, font=body_font, fill="black")
+-            y += int(body_font.size * 1.4)
+-        y += int(body_font.size * 0.5)
+-        if y > height - margin:
++            draw.text((inner, y), line, font=body_font, fill=(55, 70, 92))
++            y += int(body_font.size * 1.48)
++        y += int(body_font.size * .55)
++        if y > height - inner:
+             break
+-    image.save(target)
++    image.convert("RGB").save(target, quality=94)
+     return str(target)
+ 
+ 
+diff --git a/android/app/src/main/python/jarvis_documents.py b/android/app/src/main/python/jarvis_documents.py
+index a4003de..e0b5d6b 100644
+--- a/android/app/src/main/python/jarvis_documents.py
++++ b/android/app/src/main/python/jarvis_documents.py
+@@ -141,6 +141,15 @@ def _legacy_doc(data):
+     return _clean("\n".join(candidates))
+ 
+ 
++def _rtf(data):
++    text = _decode(data)
++    # Word-compatible .doc artifacts written by Jarvis use an RTF container.
++    text = re.sub(r"\\u(-?\d+)\?", lambda match: chr(int(match.group(1)) % 65536), text)
++    text = re.sub(r"\\'[0-9a-fA-F]{2}", " ", text)
++    text = re.sub(r"\\[a-zA-Z]+-?\d* ?", " ", text)
++    return _clean(text.replace("{", " ").replace("}", " "))
++
++
+ def extract(path, name="", mime=""):
+     file = Path(path)
+     if not file.is_file():
+@@ -175,6 +184,9 @@ def extract(path, name="", mime=""):
+ 
+     data = file.read_bytes()
+ 
++    if ext in {".rtf", ".doc"} and data.lstrip().startswith(b"{\\rtf"):
++        return _rtf(data)
++
+     # Code, markup, configuration and ordinary text are returned verbatim (bounded)
+     # so Jarvis can edit them without losing indentation or syntax.
+     if ext in SOURCE_EXTENSIONS or mime.startswith("text/"):
+@@ -191,10 +203,7 @@ def extract(path, name="", mime=""):
+         return _clean("\n".join(parser.parts))
+ 
+     if ext == ".rtf":
+-        text = _decode(data)
+-        text = re.sub(r"\\'[0-9a-fA-F]{2}", " ", text)
+-        text = re.sub(r"\\[a-zA-Z]+-?\d* ?", " ", text)
+-        return _clean(text.replace("{", " ").replace("}", " "))
++        return _rtf(data)
+ 
+     text = _decode(data)
+     printable = sum(ch.isprintable() or ch in "\r\n\t" for ch in text[:10000])
+diff --git a/android/app/src/main/res/xml/jarvis_artifact_paths.xml b/android/app/src/main/res/xml/jarvis_artifact_paths.xml
+new file mode 100644
+index 0000000..d72913a
+--- /dev/null
++++ b/android/app/src/main/res/xml/jarvis_artifact_paths.xml
+@@ -0,0 +1,4 @@
++<?xml version="1.0" encoding="utf-8"?>
++<paths xmlns:android="http://schemas.android.com/apk/res/android">
++  <files-path name="jarvis_artifacts" path="jarvis-workspace/" />
++</paths>
+diff --git a/src/agent/talents/AndroidDocumentEngine.ts b/src/agent/talents/AndroidDocumentEngine.ts
+index c4cb5b0..267c0e3 100644
+--- a/src/agent/talents/AndroidDocumentEngine.ts
++++ b/src/agent/talents/AndroidDocumentEngine.ts
+@@ -17,13 +17,29 @@ export class AndroidDocumentEngine implements TalentEngine {
+       if (operation === 'pick_read') {
+         const document = await androidDocuments.openText();
+         if (!document) return {type: 'text', summary: 'User cancelled file selection.'};
+-        return {type: 'text', summary: `${document.name}\nURI: ${document.uri}\n${document.text.slice(0, 16000)}`};
++        return {type: 'text', summary: `${document.name}\nURI: ${document.uri}\n${document.text.slice(0, 9000)}\n[Use read with offset or search for more of ${document.text.length} characters.]`};
+       }
+       const uri = String(args.uri ?? '');
+       if (!uri.startsWith('content://')) throw new Error('Select a document first. A content URI is required.');
+-      if (operation === 'read') {
++      if (operation === 'read' || operation === 'search') {
+         const document = await androidDocuments.readText(uri);
+-        return {type: 'text', summary: `${document.name}\n${document.text.slice(0, 16000)}`};
++        if (operation === 'search') {
++          const query = String(args.query ?? '').trim().slice(0, 120);
++          if (query.length < 2) throw new Error('Search query must be at least two characters');
++          const haystack = document.text.toLocaleLowerCase();
++          const needle = query.toLocaleLowerCase();
++          const excerpts: string[] = [];
++          let start = 0;
++          while (excerpts.length < 8) {
++            const found = haystack.indexOf(needle, start);
++            if (found < 0) break;
++            excerpts.push(`[offset ${found}] …${document.text.slice(Math.max(0, found - 240), found + query.length + 500)}…`);
++            start = found + needle.length;
++          }
++          return {type: 'text', summary: `${document.name}\n${excerpts.join('\n\n') || 'No matches in extracted text.'}`};
++        }
++        const offset = Number.isFinite(Number(args.offset)) ? Math.max(0, Math.min(document.text.length, Math.floor(Number(args.offset)))) : 0;
++        return {type: 'text', summary: `${document.name}\n[offset ${offset}/${document.text.length}]\n${document.text.slice(offset, offset + 9000)}`};
+       }
+       if (operation === 'write') {
+         const content = String(args.content ?? '');
+@@ -44,6 +60,7 @@ export class AndroidDocumentEngine implements TalentEngine {
+       'android_document opens user-selected Android documents and extracts text locally.',
+       'Supported inputs include TXT/Markdown/source code/HTML/JSON/XML/CSV, PDF with extractable text, DOC/DOCX, RTF, ODT, PPTX and XLSX.',
+       'For an uploaded-looking request such as "analyze this PDF" or "work with my document", call pick_read so Android shows the system file picker. Never ask the user to paste the document manually when this tool is available.',
++      'An attached document already includes its content URI in the user message. For a long file, call read with offset or search with query on that URI to inspect relevant later sections.',
+       'Scanned image-only PDFs may have no extractable text because OCR is not bundled.',
+     ].join(' ');
+   }
+@@ -52,8 +69,10 @@ export class AndroidDocumentEngine implements TalentEngine {
+       name: this.name,
+       description: 'Open Android system file picker and locally parse TXT/code/HTML/PDF/DOC/DOCX/RTF/ODT/PPTX/XLSX files chosen by the user; write plain-text formats only to a previously chosen document after confirmation.',
+       parameters: {type: 'object', additionalProperties: false, required: ['operation'], properties: {
+-        operation: {type: 'string', enum: ['pick_read', 'read', 'write']},
++        operation: {type: 'string', enum: ['pick_read', 'read', 'search', 'write']},
+         uri: {type: 'string', description: 'content:// URI from the picker'},
++        offset: {type: 'number', description: 'Character offset for reading long documents'},
++        query: {type: 'string', description: 'Search term within the selected document'},
+         content: {type: 'string'},
+       }},
+     }};
+diff --git a/src/agent/talents/ArtifactTalentUI.tsx b/src/agent/talents/ArtifactTalentUI.tsx
+index 0f5d08e..96d3b9b 100644
+--- a/src/agent/talents/ArtifactTalentUI.tsx
++++ b/src/agent/talents/ArtifactTalentUI.tsx
+@@ -1,7 +1,6 @@
+ import React from 'react';
+-import {Image, View} from 'react-native';
++import {Alert, Image, NativeModules, Platform, View} from 'react-native';
+ import * as RNFS from '@dr.pogodin/react-native-fs';
+-import Share from 'react-native-share';
+ import {SvgXml} from 'react-native-svg';
+ import {Button, Card, Text} from 'react-native-paper';
+ 
+@@ -18,6 +17,16 @@ type Artifact = {
+ };
+ 
+ const MARKER = 'JARVIS_ARTIFACTS_JSON:';
++const exportArtifact = async (artifact: Artifact, action: 'save' | 'share') => {
++  try {
++    if (Platform.OS !== 'android' || !NativeModules.ArtifactExportModule) {
++      throw new Error('Експорт файлів доступний у збірці Jarvis для Android.');
++    }
++    await NativeModules.ArtifactExportModule[action](artifact.uri, artifact.mime);
++  } catch (error) {
++    Alert.alert('Не вдалося експортувати файл', error instanceof Error ? error.message : String(error));
++  }
++};
+ 
+ const artifactsFrom = (result: TalentResult): Artifact[] => {
+   if (result.type !== 'text') return [];
+@@ -91,18 +100,14 @@ export class ArtifactTalentUI implements TalentUI {
+                 {artifact.mime +
+                   (artifact.size ? ' · ' + readableSize(artifact.size) : '')}
+               </Text>
+-              <Button
+-                mode="contained-tonal"
+-                compact
+-                onPress={() =>
+-                  Share.open({
+-                    url: artifact.uri,
+-                    type: artifact.mime || undefined,
+-                    failOnCancel: false,
+-                  }).catch(() => undefined)
+-                }>
+-                Поділитися / зберегти
+-              </Button>
++              <View style={{flexDirection: 'row', flexWrap: 'wrap'}}>
++                <Button mode="contained-tonal" compact onPress={() => exportArtifact(artifact, 'save')}>
++                  Зберегти
++                </Button>
++                <Button compact onPress={() => exportArtifact(artifact, 'share')}>
++                  Поділитися
++                </Button>
++              </View>
+             </Card.Content>
+           </Card>
+         ))}
+diff --git a/src/agent/talents/PythonExecEngine.ts b/src/agent/talents/PythonExecEngine.ts
+index 3a4ad63..a93a2ca 100644
+--- a/src/agent/talents/PythonExecEngine.ts
++++ b/src/agent/talents/PythonExecEngine.ts
+@@ -103,11 +103,11 @@ export class PythonExecEngine implements TalentEngine {
+     return [
+       'ARTIFACT EXECUTION CONTRACT:',
+       'When the user asks to create an image, PDF, DOCX, HTML, source file, report, chart, card or other downloadable artifact, do not merely print Python or describe how to make it. Call python_exec and actually write the requested file into the current Jarvis workspace.',
+-      'For PDF, legacy DOC and DOCX, prefer: from jarvis_artifacts import create_pdf, create_doc, create_docx. For TXT/Markdown/HTML/CSS/JS/TS/Python/JSON/CSV/XML/YAML and other text/source artifacts, write the requested UTF-8 file directly. For simple visual cards use create_card; for charts and custom raster graphics use Pillow directly. Use UTF-8 and Ukrainian-capable Noto/Roboto system fonts.',
++      'For PDF, legacy DOC and DOCX, prefer: from jarvis_artifacts import create_pdf, create_doc, create_docx. For TXT/Markdown/HTML/CSS/JS/TS/Python/JSON/CSV/XML/YAML and other text/source artifacts, write the requested UTF-8 file directly. For images, make a composition at a useful resolution with Pillow: deliberate layout, colors, shapes, antialiased drawing and Ukrainian-capable Noto/Roboto fonts; save an actual PNG or JPEG in artifacts/. For charts and custom raster graphics use Pillow directly. Check dimensions, contrast, clipping and spelling before the final response.',
+       'After the tool returns Created artifacts, answer briefly and refer to the real artifact shown in chat. Do not paste the implementation code unless the user explicitly asks for code.',
+       'Python/Pillow can create designed graphics, charts, diagrams and composited images; it is not a diffusion model. Never claim a photorealistic AI image was synthesized unless a real image-generation model/tool actually produced it.',
+       'Keep generated paths relative, descriptive and with the correct extension. Reuse or update files when the user requests revisions.',
+-      'Fallback for small local models: if you cannot emit a function call for an image request, output exactly one complete valid SVG inside a ```svg fenced block. The host will materialize and preview that SVG as a real artifact. For PDF/DOCX or other binary artifacts, a ```python block that writes the requested file into the workspace can be recovered and executed by the host. Never say an artifact was created when you only printed source code.',
++      'Fallback for small local models: if you cannot emit a function call, output one complete ```python block which writes the requested PNG, PDF or DOCX into artifacts/ so the host can execute it. An SVG is suitable only when the user asks for vector artwork or the Pillow composition cannot be expressed. Never say an artifact was created when you only printed source code.',
+     ].join(' ');
+   }
+ 
+diff --git a/src/components/ChatInput/ChatInput.tsx b/src/components/ChatInput/ChatInput.tsx
+index 86830f3..0c934b8 100644
+--- a/src/components/ChatInput/ChatInput.tsx
++++ b/src/components/ChatInput/ChatInput.tsx
+@@ -183,9 +183,7 @@ export const ChatInput = observer(
+     // For camera input, use promptText if provided
+     const isVideoCapable =
+       currentActivePal && hasVideoCapability(currentActivePal);
+-    const canAttachDocuments =
+-      Platform.OS === 'android' &&
+-      !!currentActivePal?.pact?.talents?.some(talent => talent.name === 'android_document');
++    const canAttachDocuments = Platform.OS === 'android';
+     const value =
+       isVideoCapable && promptText !== undefined
+         ? promptText
+diff --git a/src/components/ChatView/ChatView.tsx b/src/components/ChatView/ChatView.tsx
+index 5602f54..4427160 100644
+--- a/src/components/ChatView/ChatView.tsx
++++ b/src/components/ChatView/ChatView.tsx
+@@ -15,7 +15,7 @@ import {
+ import dayjs from 'dayjs';
+ import {observer} from 'mobx-react';
+ import calendar from 'dayjs/plugin/calendar';
+-import {Snackbar} from 'react-native-paper';
++import {ActivityIndicator, Snackbar, Text} from 'react-native-paper';
+ import {useIsFocused} from '@react-navigation/native';
+ import {useSafeAreaInsets} from 'react-native-safe-area-context';
+ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+@@ -1142,6 +1142,12 @@ export const ChatView = observer(
+                 inputContainerAnimatedStyle,
+                 {backgroundColor: inputBackgroundColor},
+               ]}>
++              {chatSessionStore.searchingWeb && (
++                <View style={{flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 5}}>
++                  <ActivityIndicator size={14} />
++                  <Text variant="labelMedium">Пошук в інтернеті</Text>
++                </View>
++              )}
+               <BannerRow
+                 messages={messages}
+                 htmlPreviewCount={htmlPreviewCount}
+diff --git a/src/components/MarkdownView/CodeRenderer.tsx b/src/components/MarkdownView/CodeRenderer.tsx
+index c51ba43..f9d2dee 100644
+--- a/src/components/MarkdownView/CodeRenderer.tsx
++++ b/src/components/MarkdownView/CodeRenderer.tsx
+@@ -1,11 +1,16 @@
+ import React from 'react';
+-import {View} from 'react-native';
++import {Alert, View} from 'react-native';
++import {Button, Text} from 'react-native-paper';
+ 
+ import CodeHighlighter from 'react-native-code-highlighter';
+ import {atomOneDark} from 'react-syntax-highlighter/dist/esm/styles/hljs';
+ 
+ import {useTheme} from '../../hooks';
+ import {CodeBlockHeader} from '../CodeBlockHeader';
++import {HtmlPreviewBubble} from '../HtmlPreviewBubble';
++import {PythonExecEngine} from '../../agent/talents/PythonExecEngine';
++import {ArtifactTalentUI} from '../../agent/talents/ArtifactTalentUI';
++import type {TalentResult} from '../../services/talents/types';
+ 
+ import {codeHighlighterPreOverride, createStyles} from './styles';
+ 
+@@ -42,6 +47,8 @@ function decodeHTMLEntities(text: string): string {
+  */
+ export const CodeRenderer = ({TDefaultRenderer, ...props}: any) => {
+   const theme = useTheme();
++  const [running, setRunning] = React.useState(false);
++  const [result, setResult] = React.useState<TalentResult | null>(null);
+   const styles = createStyles(theme);
+   const isCodeBlock = props?.tnode?.parent?.tagName === 'pre';
+   if (!isCodeBlock) {
+@@ -63,6 +70,7 @@ export const CodeRenderer = ({TDefaultRenderer, ...props}: any) => {
+ 
+   return (
+     <View>
++      {/^(html|htm)$/i.test(language) && <HtmlPreviewBubble html={content} />}
+       <CodeBlockHeader language={language} content={content} />
+       <CodeHighlighter
+         hljsStyle={atomOneDark}
+@@ -74,6 +82,25 @@ export const CodeRenderer = ({TDefaultRenderer, ...props}: any) => {
+         customStyle={codeHighlighterPreOverride}>
+         {content}
+       </CodeHighlighter>
++      {/^(python|py)$/i.test(language) && (
++        <Button
++          disabled={running}
++          loading={running}
++          onPress={async () => {
++            setRunning(true);
++            try {
++              setResult(await new PythonExecEngine().execute({code: content}));
++            } catch (error) {
++              Alert.alert('Помилка Python', error instanceof Error ? error.message : String(error));
++            } finally {
++              setRunning(false);
++            }
++          }}>
++          Запустити Python
++        </Button>
++      )}
++      {result && <Text selectable>{result.summary.split('JARVIS_ARTIFACTS_JSON:')[0]}</Text>}
++      {result && new ArtifactTalentUI('python_exec').renderResult(result)}
+     </View>
+   );
+ };
+diff --git a/src/hooks/useChatSession.ts b/src/hooks/useChatSession.ts
+index 48a7def..ae40ba0 100644
+--- a/src/hooks/useChatSession.ts
++++ b/src/hooks/useChatSession.ts
+@@ -1,4 +1,5 @@
+ import React, {useRef} from 'react';
++import {NativeModules, Platform} from 'react-native';
+ 
+ import {toJS, runInAction} from 'mobx';
+ import type {JinjaFormattedChatResult} from 'llama.rn';
+@@ -17,7 +18,7 @@ import {
+ } from '../store';
+ import {resolveReasoningCapability} from '../utils/reasoningCapability';
+ 
+-import {MessageType, ModelOrigin, User} from '../utils/types';
++import {MessageType, ModelOrigin, User, type ChatMessage} from '../utils/types';
+ import {createMultimodalWarning} from '../utils/errors';
+ import {
+   assembleMessages,
+@@ -45,6 +46,7 @@ import type {ToolDefinition} from '../services/talents/types';
+ import {retrieveKnowledge, wantsWebSearch} from '../knowledge/retrieve';
+ import {recoverArtifactFromAssistantText} from '../agent/artifactRecovery';
+ import {wrapUntrusted} from '../services/talents/untrustedContent';
++import {localChatMessages} from '../utils/localChatMessages';
+ import {
+   agentStateReducer,
+   createTriggerMarkerCache,
+@@ -158,6 +160,7 @@ const prepareCompletion = async ({
+     ...chatMessages,
+     {role: 'user', content: userMessageContent},
+   ]);
++  const localModel = modelStore.activeModel?.origin !== ModelOrigin.REMOTE;
+ 
+   // Reseed the read_url exfiltration allowlist for this run; the trust policy
+   // (which sources count) lives in the talents module.
+@@ -165,7 +168,7 @@ const prepareCompletion = async ({
+ 
+   const completionParamsWithAppProps = {
+     ...sessionCompletionSettings,
+-    messages,
++    messages: localModel ? localChatMessages(messages as ChatMessage[]) : messages,
+     stop: stopWords,
+   };
+ 
+@@ -549,6 +552,8 @@ export const useChatSession = (
+ 
+     let knowledgeEvidence = '';
+     if (!message.imageUris?.length && message.text.trim().length >= 3) {
++      const searchingWeb = wantsWebSearch(message.text);
++      if (searchingWeb) chatSessionStore.setSearchingWeb(true);
+       try {
+         knowledgeEvidence = await retrieveKnowledge(message.text);
+       } catch (error) {
+@@ -558,6 +563,8 @@ export const useChatSession = (
+           return;
+         }
+         await addSystemMessage(`Локальний ZIM недоступний: ${error instanceof Error ? error.message : String(error)}`);
++      } finally {
++        if (searchingWeb) chatSessionStore.setSearchingWeb(false);
+       }
+     }
+ 
+@@ -600,6 +607,7 @@ export const useChatSession = (
+       pal,
+       model: modelStore.activeModel,
+     });
++    const localModel = modelStore.activeModel?.origin !== ModelOrigin.REMOTE;
+ 
+     const {cleanCompletionParams, messageInfo} = await prepareCompletion({
+       imageUris: imageUris || [],
+@@ -668,6 +676,11 @@ export const useChatSession = (
+       }
+     }
+ 
++    if (Platform.OS === 'android') {
++      NativeModules.JarvisTaskModule?.start().catch((error: unknown) =>
++        console.warn('[chat] background task service unavailable', error),
++      );
++    }
+     try {
+       const events = runAgent({
+         engine,
+@@ -677,6 +690,7 @@ export const useChatSession = (
+         triggerMarkers,
+         messageId: messageInfo.id,
+         signal: abortRef.current.signal,
++        localModel,
+       });
+ 
+       // The chunk-cycle would otherwise run entirely via microtask
+@@ -940,6 +954,11 @@ export const useChatSession = (
+         await addSystemMessage(`${l10n.chat.completionFailed}${errorMessage}`);
+       }
+     } finally {
++      if (Platform.OS === 'android') {
++        NativeModules.JarvisTaskModule?.stop().catch((error: unknown) =>
++          console.warn('[chat] background task service cleanup failed', error),
++        );
++      }
+       try {
+         deactivateKeepAwake();
+       } catch (error) {
+diff --git a/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx b/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx
+index 753cfc6..d73ed7e 100644
+--- a/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx
++++ b/src/screens/SettingsScreen/OfflineKnowledgeCard.tsx
+@@ -1,7 +1,7 @@
+ import React from 'react';
+ import {Alert, Linking, View} from 'react-native';
+-import {Button, Card, Divider, Text} from 'react-native-paper';
+-import {offlineZim, type ArchiveInfo, type ArchiveStatus} from '../../knowledge/offlineZim';
++import {Button, Card, Divider, Text, TextInput} from 'react-native-paper';
++import {offlineZim, type ArchiveInfo, type ArchiveStatus, type OfflineArticle} from '../../knowledge/offlineZim';
+ 
+ const formatBytes = (bytes: number): string => {
+   if (!Number.isFinite(bytes) || bytes <= 0) return 'невідомий розмір';
+@@ -12,6 +12,9 @@ const formatBytes = (bytes: number): string => {
+ export const OfflineKnowledgeCard: React.FC = () => {
+   const [archive, setArchive] = React.useState<ArchiveStatus>({ready: false, name: null});
+   const [message, setMessage] = React.useState('');
++  const [query, setQuery] = React.useState('');
++  const [results, setResults] = React.useState<OfflineArticle[]>([]);
++  const [searching, setSearching] = React.useState(false);
+   const refresh = React.useCallback(
+     () => offlineZim.status().then(setArchive).catch(error => setMessage(String(error))),
+     [],
+@@ -69,6 +72,20 @@ export const OfflineKnowledgeCard: React.FC = () => {
+     );
+ 
+   const archives = archive.archives ?? [];
++  const testSearch = async () => {
++    if (query.trim().length < 2) return;
++    setSearching(true);
++    try {
++      const matches = await offlineZim.search(query.trim(), 8);
++      setResults(matches);
++      setMessage(matches.length ? `Знайдено ${matches.length} статей у ZIM.` : 'Статей за цим запитом не знайдено. Спробуйте точну назву.');
++    } catch (error) {
++      setResults([]);
++      setMessage(`Помилка пошуку ZIM: ${String(error)}`);
++    } finally {
++      setSearching(false);
++    }
++  };
+ 
+   return (
+     <Card elevation={0} testID="offline-knowledge-card">
+@@ -95,6 +112,21 @@ export const OfflineKnowledgeCard: React.FC = () => {
+             </Button>
+           </View>
+         ))}
++        {archive.ready && (
++          <View style={{gap: 6}}>
++            <TextInput label="Перевірити пошук у ZIM" value={query} onChangeText={setQuery}
++              returnKeyType="search" onSubmitEditing={testSearch} />
++            <Button onPress={testSearch} loading={searching} disabled={searching || query.trim().length < 2}>
++              Знайти статтю
++            </Button>
++            {results.map((article, index) => (
++              <View key={`${article.archive}-${article.path}-${index}`} style={{paddingVertical: 4}}>
++                <Text variant="titleSmall" selectable>{article.title} · {article.archive}</Text>
++                <Text variant="bodySmall" selectable>{article.excerpt}</Text>
++              </View>
++            ))}
++          </View>
++        )}
+ 
+         <Button mode="contained-tonal" onPress={choose}>
+           {archive.ready ? 'Додати ще ZIM' : 'Додати ZIM'}
+diff --git a/src/services/agent/AgentRunner.ts b/src/services/agent/AgentRunner.ts
+index df3c328..c38583b 100644
+--- a/src/services/agent/AgentRunner.ts
++++ b/src/services/agent/AgentRunner.ts
+@@ -13,8 +13,9 @@ import type {
+   TokenDelta,
+ } from './AgentRunner.types';
+ import type {TalentResult} from '../talents/types';
++import {localChatMessages} from '../../utils/localChatMessages';
+ 
+-export const DEFAULT_MAX_TURNS = 5;
++export const DEFAULT_MAX_TURNS = 10;
+ 
+ const BUDGET_EXHAUSTED_NUDGE =
+   '(Tool budget exhausted. Answer now using only the information gathered above; if it is insufficient, say what is missing.)';
+@@ -252,6 +253,7 @@ export async function* runAgent(
+     messageId,
+     maxTurns = DEFAULT_MAX_TURNS,
+     signal,
++    localModel = false,
+   } = options;
+ 
+   yield {type: 'run_started', messageId};
+@@ -483,6 +485,9 @@ export async function* runAgent(
+         outcomes,
+         finishedResult.reasoning_content,
+       );
++      if (localModel) {
++        messages = localChatMessages(messages as ChatMessage[]) as ApiCompletionParams['messages'];
++      }
+       turn += 1;
+ 
+       if (turn >= maxTurns) {
+diff --git a/src/services/agent/AgentRunner.types.ts b/src/services/agent/AgentRunner.types.ts
+index 03439eb..f538be4 100644
+--- a/src/services/agent/AgentRunner.types.ts
++++ b/src/services/agent/AgentRunner.types.ts
+@@ -93,6 +93,7 @@ export const initialAgentUiState: AgentUiState = {
+  * (already created by the hook before calling) is passed in.
+  */
+ export interface AgentRunOptions {
++  localModel?: boolean;
+   engine: CompletionEngine;
+   initialParams: ApiCompletionParams;
+   /** Names of talents this Pal advertises; outcomes for any other
+diff --git a/src/services/search/providers/deviceWeb.ts b/src/services/search/providers/deviceWeb.ts
+index 40de69c..8cdd08f 100644
+--- a/src/services/search/providers/deviceWeb.ts
++++ b/src/services/search/providers/deviceWeb.ts
+@@ -1,5 +1,6 @@
+ import type {SearchProvider, SearchHit, SearchOptions} from '../types';
+ import {fetchText} from './http';
++import {NativeModules, Platform} from 'react-native';
+ 
+ const WEB_HEADERS = {
+   Accept: 'text/html,application/xhtml+xml,application/rss+xml,application/xml;q=0.9,*/*;q=0.8',
+@@ -76,6 +77,15 @@ export class DeviceWebProvider implements SearchProvider {
+     } catch (error) {
+       failures.push('Bing HTML: ' + String(error));
+     }
++    if (Platform.OS === 'android' && NativeModules.BackgroundWebSearchModule) {
++      try {
++        const hits = await NativeModules.BackgroundWebSearchModule.search(query) as SearchHit[];
++        if (hits.length) return hits.slice(0, Math.min(8, Math.max(1, opts.maxResults)));
++        failures.push('Google browser: немає результатів');
++      } catch (error) {
++        failures.push('Google browser: ' + String(error));
++      }
++    }
+     throw new Error(
+       'Веб-пошук недоступний з цього підключення. ' + failures.join('; '),
+     );
+diff --git a/src/store/ChatSessionStore.ts b/src/store/ChatSessionStore.ts
+index 23fae69..25860cf 100644
+--- a/src/store/ChatSessionStore.ts
++++ b/src/store/ChatSessionStore.ts
+@@ -120,6 +120,11 @@ class ChatSessionStore {
+   // `setAgentUiState`. Renderers compute the active-vs-persisted
+   // predicate at the ChatView level.
+   agentUiState: AgentUiState = initialAgentUiState;
++  searchingWeb = false;
++
++  setSearchingWeb(value: boolean) {
++    this.searchingWeb = value;
++  }
+ 
+   // Per-token counter for PendingIndicator's tool-call suffix. Lives
+   // outside `agentUiState` so broad observers (ChatView) aren't
+diff --git a/src/store/PalStore.ts b/src/store/PalStore.ts
+index e0c9eb4..ee96c74 100644
+--- a/src/store/PalStore.ts
++++ b/src/store/PalStore.ts
+@@ -57,10 +57,11 @@ const JARVIS_SEEDED_KEY = 'PalStore.builtin.Jarvis.seeded';
+ const JARVIS_TOOLS_V07_KEY = 'PalStore.builtin.Jarvis.tools.v07';
+ const JARVIS_TOOLS_V08_KEY = 'PalStore.builtin.Jarvis.tools.v08';
+ const JARVIS_TOOLS_V09_KEY = 'PalStore.builtin.Jarvis.tools.v09';
++const JARVIS_TOOLS_V11_KEY = 'PalStore.builtin.Jarvis.tools.v11';
+ const JARVIS_FILE_TALENTS = ['web_search', 'read_url', 'workspace', 'python_exec', 'android_document'].map(name => ({name, necessity: 'optional' as const}));
+ const JARVIS_ID_KEY = 'PalStore.builtin.Jarvis.id';
+ const JARVIS_SYSTEM_PROMPT =
+-  "You are Jarvis, AuthorChe's private pocket AI. Reply in the user's language, with Ukrainian as the default. Operate as an agent, not a code-only chatbot. For current or external facts, use web_search first and read_url for important sources; never claim you searched if the tool failed. For an image, PDF, DOCX, HTML page, source file, report or other artifact, use the available workspace/python tools to create the actual file and return the resulting artifact in chat instead of merely printing implementation code. Use Android document tools to read user-selected files and offline ZIM evidence when relevant. Clearly mark offline knowledge as potentially outdated. Never claim a photorealistic AI image was generated unless a real image-generation model produced it.";
++  "You are Jarvis, AuthorChe's private pocket AI. Reply in the user's language, with Ukrainian as the default. Operate as an agent, not a code-only chatbot. For a project, first identify the deliverables and file structure, then create the files in the workspace, run available local checks with python_exec, inspect errors, revise and show the final artifacts. Do not claim a test passed without running it. For current or external facts, use web_search first and read_url for important sources; never claim you searched if the tool failed. For an image, PDF, DOCX, HTML page, source file, report or other artifact, use the available workspace/python tools to create the actual file and return the resulting artifact in chat instead of merely printing implementation code. Use Android document tools to read user-selected files and offline ZIM evidence when relevant. Clearly mark offline knowledge as potentially outdated. Never claim a photorealistic AI image was generated unless a real image-generation model produced it.";
+ 
+ class PalStore {
+   private initializationPromise: Promise<void> | null = null;
+@@ -801,19 +802,20 @@ class PalStore {
+   private async initializeJarvisPal(force = false): Promise<void> {
+     try {
+       if (!force && (await AsyncStorage.getItem(JARVIS_SEEDED_KEY)) === 'true' &&
+-          (await AsyncStorage.getItem(JARVIS_TOOLS_V09_KEY)) === 'true') {
++          (await AsyncStorage.getItem(JARVIS_TOOLS_V11_KEY)) === 'true') {
+         return;
+       }
+ 
+       const existing = await this.findJarvisPal();
+       if (existing) {
+         await AsyncStorage.setItem(JARVIS_ID_KEY, existing.id);
+-        if (await AsyncStorage.getItem(JARVIS_TOOLS_V09_KEY) !== 'true') {
++        if (await AsyncStorage.getItem(JARVIS_TOOLS_V11_KEY) !== 'true') {
+           await this.updatePal(existing.id, {
+             pact: {talents: JARVIS_FILE_TALENTS},
+             ...(!existing.isSystemPromptChanged ? {systemPrompt: JARVIS_SYSTEM_PROMPT} : {}),
+           });
+           await AsyncStorage.setItem(JARVIS_TOOLS_V09_KEY, 'true');
++          await AsyncStorage.setItem(JARVIS_TOOLS_V11_KEY, 'true');
+         }
+         await AsyncStorage.setItem(JARVIS_SEEDED_KEY, 'true');
+         return;
+@@ -842,6 +844,7 @@ class PalStore {
+       await AsyncStorage.setItem(JARVIS_TOOLS_V07_KEY, 'true');
+       await AsyncStorage.setItem(JARVIS_TOOLS_V08_KEY, 'true');
+       await AsyncStorage.setItem(JARVIS_TOOLS_V09_KEY, 'true');
++      await AsyncStorage.setItem(JARVIS_TOOLS_V11_KEY, 'true');
+     } catch (error) {
+       console.error('Error initializing Jarvis agent:', error);
+     }
+diff --git a/src/utils/__tests__/localChatMessages.test.ts b/src/utils/__tests__/localChatMessages.test.ts
+new file mode 100644
+index 0000000..0bdbd3c
+--- /dev/null
++++ b/src/utils/__tests__/localChatMessages.test.ts
+@@ -0,0 +1,40 @@
++import {localChatMessages} from '../localChatMessages';
++import type {ChatMessage} from '../types';
++
++const rolesAlternate = (messages: ChatMessage[]) => {
++  const body = messages.filter(message => message.role !== 'system');
++  expect(body[0]?.role).toBe('user');
++  body.forEach((message, index) => {
++    expect(message.role).toBe(index % 2 === 0 ? 'user' : 'assistant');
++  });
++};
++
++describe('local GGUF chat template compatibility', () => {
++  it('keeps the attached file and observations after an agent tool call', () => {
++    const messages: ChatMessage[] = [
++      {role: 'system', content: 'Jarvis'},
++      {role: 'user', content: 'Read attached PDF: invoice total 42'},
++      {role: 'assistant', content: '', tool_calls: [{id: 'call1', type: 'function', function: {name: 'python_exec', arguments: '{"code":"print(42)"}'}}]},
++      {role: 'tool', tool_call_id: 'call1', content: '42'},
++      {role: 'assistant', content: 'The invoice is 42.'},
++      {role: 'user', content: 'And the sum?'},
++    ];
++    const prepared = localChatMessages(messages);
++    rolesAlternate(prepared);
++    expect(JSON.stringify(prepared)).toContain('invoice total 42');
++    expect(JSON.stringify(prepared)).toContain('Tool result (call1)');
++    expect(JSON.stringify(prepared)).toContain('python_exec');
++    expect(prepared.some(message => message.role === 'tool')).toBe(false);
++    expect(messages[3].role).toBe('tool');
++  });
++
++  it('combines adjacent user turns while preserving image content', () => {
++    const prepared = localChatMessages([
++      {role: 'user', content: 'Please inspect'},
++      {role: 'user', content: [{type: 'text', text: 'caption'}, {type: 'image_url', image_url: {url: 'file:///image.png'}}]},
++    ]);
++    rolesAlternate(prepared);
++    expect(JSON.stringify(prepared)).toContain('file:///image.png');
++    expect(JSON.stringify(prepared)).toContain('Please inspect');
++  });
++});
+diff --git a/src/utils/chat.ts b/src/utils/chat.ts
+index d07e7b2..579bd07 100644
+--- a/src/utils/chat.ts
++++ b/src/utils/chat.ts
+@@ -18,10 +18,11 @@ export const assistantId = 'h3o3lc5xj';
+ export const user = {id: userId};
+ export const assistant = {id: assistantId};
+ 
+-const MAX_ATTACHMENT_CONTEXT_CHARS = 48000;
+-const MAX_SINGLE_ATTACHMENT_CHARS = 24000;
++const MAX_ATTACHMENT_CONTEXT_CHARS = 16000;
++const MAX_SINGLE_ATTACHMENT_CHARS = 9000;
+ 
+ type JarvisAttachmentContext = {
++  uri?: string;
+   name?: string;
+   mime?: string;
+   size?: number;
+@@ -50,9 +51,13 @@ export function withJarvisAttachments(
+     remaining -= slice.length;
+     const name = String(item.name ?? 'attachment').replace(/[\r\n]+/g, ' ');
+     const mime = String(item.mime ?? 'application/octet-stream').replace(/[\r\n]+/g, ' ');
+-    const truncated = slice.length < content.length ? '\n[content truncated for context]' : '';
++    const truncated = slice.length < content.length
++      ? `\n[Preview truncated at ${slice.length}/${content.length} characters. Use android_document read with this URI and an offset, or search, to inspect the rest.]`
++      : '';
++    const uri = typeof item.uri === 'string' && item.uri.startsWith('content://')
++      ? `\nAndroid document URI: ${item.uri}` : '';
+     blocks.push(
+-      `----- BEGIN USER ATTACHMENT: ${name} (${mime}) -----\n${slice}${truncated}\n----- END USER ATTACHMENT: ${name} -----`,
++      `----- BEGIN USER ATTACHMENT: ${name} (${mime}) -----${uri}\n${slice}${truncated}\n----- END USER ATTACHMENT: ${name} -----`,
+     );
+   }
+   if (!blocks.length) return text;
+diff --git a/src/utils/localChatMessages.ts b/src/utils/localChatMessages.ts
+new file mode 100644
+index 0000000..0da7ecb
+--- /dev/null
++++ b/src/utils/localChatMessages.ts
+@@ -0,0 +1,62 @@
++import type {ChatMessage} from './types';
++
++/**
++ * Some GGUF templates (notably Gemma-family templates) reject `tool` roles and
++ * consecutive turns with the same role. Keep the OpenAI wire transcript for
++ * remote models, but flatten local tool observations into the next user turn.
++ * This runs at the native completion boundary, including every agent follow-up.
++ */
++export function localChatMessages(messages: ChatMessage[]): ChatMessage[] {
++  const out: ChatMessage[] = [];
++  const text = (content: ChatMessage['content']): string =>
++    typeof content === 'string'
++      ? content
++      : Array.isArray(content)
++        ? content.map(part => part?.type === 'text' ? part.text ?? '' : '[image]').join('\n')
++        : String(content ?? '');
++
++  for (const message of messages) {
++    if (message.role === 'system') {
++      if (out.length === 0) {
++        out.push({role: 'system', content: text(message.content)});
++      } else if (out.length === 1 && out[0].role === 'system') {
++        out[0].content = text(out[0].content) + '\n\n' + text(message.content);
++      }
++      continue;
++    }
++    const role = message.role === 'assistant' ? 'assistant' : 'user';
++    const observation = text(message.content);
++    const boundedObservation = observation.length > 3600
++      ? observation.slice(0, 2800) + '\n[… shortened for local context …]\n' + observation.slice(-600)
++      : observation;
++    const content = message.role === 'tool'
++      ? `Tool result (${message.tool_call_id ?? 'unknown'}):\n${boundedObservation}`
++      : message.content;
++    const calls = message.tool_calls?.map(call =>
++      `${call.function?.name ?? 'tool'}(${(call.function?.arguments ?? '{}').slice(0, 300)})`).join('\n');
++    const value = calls ? `${text(content)}\nTool calls:\n${calls}`.trim() : content;
++    const previous = out[out.length - 1];
++    if (previous?.role === role) {
++      // Preserve the content of both messages, including a multimodal user
++      // turn, rather than dropping a file or a tool result to appease Jinja.
++      if (Array.isArray(previous.content)) {
++        previous.content = [
++          ...previous.content,
++          {type: 'text', text: '\n\n' + text(value)},
++        ] as ChatMessage['content'];
++      } else if (Array.isArray(value)) {
++        previous.content = [
++          {type: 'text', text: text(previous.content) + '\n\n'},
++          ...value,
++        ] as ChatMessage['content'];
++      } else {
++        previous.content = `${text(previous.content)}\n\n${text(value)}`;
++      }
++    } else {
++      // A persisted partial assistant turn may precede the first user turn.
++      if (role === 'assistant' && !out.some(item => item.role === 'user')) continue;
++      out.push({role, content: value});
++    }
++  }
++  return out;
++}
